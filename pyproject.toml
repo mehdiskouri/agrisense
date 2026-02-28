@@ -1,0 +1,112 @@
+[project]
+name = "agrisense"
+version = "0.1.0"
+description = "Agricultural hypergraph API with GPU-accelerated Julia computational core"
+authors = [{ name = "Mehdi Skouri" }]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+
+dependencies = [
+    # --- Web framework ---
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    # --- Database ---
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "geoalchemy2>=0.15.0",
+    # --- Validation & config ---
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    # --- Cache & messaging ---
+    "redis>=5.2.0",
+    # --- HTTP client (LLM calls) ---
+    "httpx>=0.28.0",
+    # --- Auth ---
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    # --- Julia bridge ---
+    "juliacall>=0.9.23",
+    # --- Observability ---
+    "structlog>=24.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linter + formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["app", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "A",     # flake8-builtins
+    "S",     # flake8-bandit (security)
+    "T20",   # flake8-print
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+]
+ignore = [
+    "S101",  # allow assert in tests
+    "S105",  # allow hardcoded passwords in config examples
+    "B008",  # allow Depends() in function defaults
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# ---------------------------------------------------------------------------
+# Mypy — type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "juliacall.*",
+    "redis.*",
+    "jose.*",
+    "passlib.*",
+    "geoalchemy2.*",
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+addopts = "-v --tb=short"

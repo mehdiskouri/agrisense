@@ -1,0 +1,83 @@
+# ============================================================================
+# AgriSense — Docker Compose
+# Services: api, postgres (16 + PostGIS), redis (7), seed (one-shot)
+# ============================================================================
+name: agrisense
+
+services:
+  # ── PostgreSQL 16 + PostGIS ──────────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: agrisense
+      POSTGRES_USER: agrisense
+      POSTGRES_PASSWORD: agrisense
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agrisense -d agrisense"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ── Redis 7 ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── API Server ───────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agrisense:agrisense@postgres:5432/agrisense
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Uncomment below for GPU pass-through (requires nvidia-container-toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ── Seed (one-shot) ─────────────────────────────────────────────────────
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "scripts/seed_db.py"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agrisense:agrisense@postgres:5432/agrisense
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:

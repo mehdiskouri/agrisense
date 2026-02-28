@@ -1,0 +1,129 @@
+# ============================================================================
+# AgriSense — GitHub Actions CI
+# Jobs: lint, python-test, julia-test, docker-build
+# ============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  PYTHON_VERSION: "3.12"
+  JULIA_VERSION: "1.11"
+
+jobs:
+  # ── Lint & Type Check ────────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dev dependencies
+        run: pip install ruff mypy pydantic
+
+      - name: Ruff check
+        run: ruff check app/ tests/ scripts/
+
+      - name: Ruff format check
+        run: ruff format --check app/ tests/ scripts/
+
+      - name: Mypy
+        run: mypy app/ --ignore-missing-imports
+        continue-on-error: true  # strict mode may flag stubs initially
+
+  # ── Python Tests ─────────────────────────────────────────────────────────
+  python-test:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: agrisense_test
+          POSTGRES_USER: agrisense
+          POSTGRES_PASSWORD: agrisense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agrisense -d agrisense_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+          --health-start-period 10s
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install ".[dev]"
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://agrisense:agrisense@localhost:5432/agrisense_test
+          REDIS_URL: redis://localhost:6379/0
+          JWT_SECRET: test-secret-key
+          ANTHROPIC_API_KEY: sk-ant-test
+          LOG_LEVEL: debug
+        run: pytest tests/ -x --tb=short -v
+
+  # ── Julia Tests (CPU backend) ────────────────────────────────────────────
+  julia-test:
+    name: Julia Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ env.JULIA_VERSION }}
+
+      - uses: julia-actions/cache@v2
+        with:
+          cache-name: "julia-agrisensecore"
+
+      - name: Instantiate Julia project
+        run: julia --project=core/AgriSenseCore -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run Julia tests
+        run: julia --project=core/AgriSenseCore -e 'using Pkg; Pkg.test()'
+
+  # ── Docker Build ─────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: agrisense:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
