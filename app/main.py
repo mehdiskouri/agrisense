@@ -6,8 +6,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
+from sqlalchemy import text
 
 from app.config import get_settings
+from app.database import engine
+from app.routes import farms
+from app.services import julia_bridge
 
 logger = logging.getLogger("agrisense")
 
@@ -35,13 +40,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
 
-    # TODO (Phase 5): Initialize Julia bridge
-    # TODO (Phase 5): Build hypergraph state from DB
+    redis: Redis | None = None
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+
+        redis = Redis.from_url(settings.redis_url, decode_responses=True)
+        await redis.ping()
+        app.state.redis = redis
+
+        julia_bridge.initialize_julia()
+        julia_bridge.generate_synthetic(
+            farm_type=settings.farm_default_type.value,
+            days=1,
+            seed=1,
+        )
+        app.state.julia_ready = True
+    except Exception as exc:
+        logger.exception("startup failure", extra={"error": str(exc)})
+        raise
 
     yield
 
     logger.info("AgriSense shutting down")
-    # TODO: Cleanup resources
+    if redis is not None:
+        await redis.aclose()
+    await engine.dispose()
 
 
 app = FastAPI(
@@ -79,10 +103,4 @@ async def health_check() -> dict[str, str]:
 
 
 # ── Router registration ────────────────────────────────────────────────────
-# TODO (Phase 5+): Register routers as they are implemented
-# from app.routes import farms, ingest, analytics, ask, ws
-# app.include_router(farms.router, prefix="/api/v1", tags=["farms"])
-# app.include_router(ingest.router, prefix="/api/v1", tags=["ingest"])
-# app.include_router(analytics.router, prefix="/api/v1", tags=["analytics"])
-# app.include_router(ask.router, prefix="/api/v1", tags=["ask"])
-# app.include_router(ws.router, tags=["websocket"])
+app.include_router(farms.router, prefix="/api/v1")
