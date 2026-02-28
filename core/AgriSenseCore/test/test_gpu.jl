@@ -92,7 +92,7 @@ end
     @testset "build_hypergraph creates GPU arrays" begin
         graph = make_gpu_test_graph()
         for (name, layer) in graph.layers
-            @test layer.incidence isa CuSparseMatrixCSC{Float32, Int32}
+            @test layer.incidence isa CuSparseMatrixCSR{Float32, Int32}
             @test layer.vertex_features isa CuMatrix{Float32}
             @test layer.feature_history isa CuArray{Float32, 3}
         end
@@ -233,7 +233,7 @@ end
 
         layer = graph.layers[:soil]
         @test size(layer.incidence, 2) == old_ne + 1
-        @test layer.incidence isa CuSparseMatrixCSC{Float32, Int32}
+        @test layer.incidence isa CuSparseMatrixCSR{Float32, Int32}
         @test layer.vertex_features isa CuMatrix{Float32}
     end
 
@@ -243,7 +243,7 @@ end
         remove_hyperedge!(graph, :soil, "e-soil-1")
         layer = graph.layers[:soil]
         @test size(layer.incidence, 2) == ne_before - 1
-        @test layer.incidence isa CuSparseMatrixCSC{Float32, Int32}
+        @test layer.incidence isa CuSparseMatrixCSR{Float32, Int32}
     end
 
     @testset "add_vertex! extends GPU arrays" begin
@@ -255,7 +255,7 @@ end
         for (_, layer) in graph.layers
             @test size(layer.vertex_features, 1) == nv_before + 1
             @test layer.vertex_features isa CuMatrix{Float32}
-            @test layer.incidence isa CuSparseMatrixCSC{Float32, Int32}
+            @test layer.incidence isa CuSparseMatrixCSR{Float32, Int32}
         end
     end
 end

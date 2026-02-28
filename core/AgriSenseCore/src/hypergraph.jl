@@ -38,7 +38,7 @@ function make_sparse_incidence(row_inds::Vector{Int32}, col_inds::Vector{Int32},
                                 nv::Int, ne::Int)
     B_cpu = sparse(row_inds, col_inds, ones(Float32, length(row_inds)), nv, ne)
     if HAS_CUDA
-        return CUSPARSE.CuSparseMatrixCSC(B_cpu)
+        return CUSPARSE.CuSparseMatrixCSR(B_cpu)
     end
     return B_cpu
 end
@@ -123,7 +123,7 @@ end
 """
     to_gpu(graph::LayeredHyperGraph) -> LayeredHyperGraph
 
-Move all layer data to GPU. Returns a new graph with CuSparseMatrixCSC incidence
+Move all layer data to GPU. Returns a new graph with CuSparseMatrixCSR incidence
 and CuMatrix features. No-op if CUDA is unavailable.
 Uses explicit CUSPARSE conversion for reliable sparse handling.
 """
@@ -303,7 +303,7 @@ function _to_gpu_layer(layer::HyperGraphLayer)
         return layer
     end
     B_cpu = ensure_cpu(layer.incidence)
-    B_gpu = CUSPARSE.CuSparseMatrixCSC(B_cpu)
+    B_gpu = CUSPARSE.CuSparseMatrixCSR(B_cpu)
     vf_gpu = CuArray(ensure_cpu(layer.vertex_features))
     fh_gpu = CuArray(ensure_cpu(layer.feature_history))
     HyperGraphLayer(B_gpu, vf_gpu, fh_gpu,
@@ -428,7 +428,7 @@ function aggregate_by_edge(layer::HyperGraphLayer; reduce::Function=mean)::Matri
     d = size(vf, 2)
 
     if reduce === mean || reduce === sum
-        # SpMM path — works on CPU SparseMatrixCSC and GPU CuSparseMatrixCSC
+        # SpMM path — works on CPU SparseMatrixCSC and GPU CuSparseMatrixCSR
         raw = transpose(B) * vf   # (ne, d) — sum of member features per edge
         if reduce === mean
             degree = vec(sum(ensure_cpu(B); dims=1))  # (ne,)

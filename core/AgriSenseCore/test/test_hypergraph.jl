@@ -63,7 +63,7 @@ end
         config = make_test_config()
         profile = FarmProfile(config)
         graph = build_hypergraph(profile, config["vertices"], config["edges"])
-        B_soil = graph.layers[:soil].incidence
+        B_soil = ensure_cpu(graph.layers[:soil].incidence)
         # v1 and v2 should be in edge 1
         @test B_soil[1, 1] == 1.0f0  # v1
         @test B_soil[2, 1] == 1.0f0  # v2
@@ -172,7 +172,7 @@ end
         graph = build_hypergraph(profile, config["vertices"], config["edges"])
         feat = Float32[0.5, 0.3, 0.8, 0.1]
         update_vertex_features!(graph, :soil, "v1", feat)
-        @test graph.layers[:soil].vertex_features[1, :] == feat
+        @test ensure_cpu(graph.layers[:soil].vertex_features)[1, :] == feat
     end
 
     @testset "auto-expand feature matrix" begin
@@ -183,9 +183,9 @@ end
         big_feat = Float32[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         update_vertex_features!(graph, :soil, "v1", big_feat)
         @test size(graph.layers[:soil].vertex_features, 2) == 6
-        @test graph.layers[:soil].vertex_features[1, :] == big_feat
+        @test ensure_cpu(graph.layers[:soil].vertex_features)[1, :] == big_feat
         # Other rows should still be zero-padded
-        @test all(graph.layers[:soil].vertex_features[3, :] .== 0.0f0)
+        @test all(ensure_cpu(graph.layers[:soil].vertex_features)[3, :] .== 0.0f0)
     end
 end
 
@@ -202,7 +202,7 @@ end
         @test size(graph.layers[:soil].incidence, 2) == 2
         @test "e-soil-2" in graph.layers[:soil].edge_ids
         # v1 and v3 should be in the new column
-        B = graph.layers[:soil].incidence
+        B = ensure_cpu(graph.layers[:soil].incidence)
         @test B[1, 2] == 1.0f0  # v1
         @test B[2, 2] == 0.0f0  # v2
         @test B[3, 2] == 1.0f0  # v3
@@ -224,7 +224,7 @@ end
         profile = FarmProfile(config)
         graph = build_hypergraph(profile, config["vertices"], config["edges"])
         add_hyperedge!(graph, :soil, "e-soil-skip", ["v1", "v999"])
-        B = graph.layers[:soil].incidence
+        B = ensure_cpu(graph.layers[:soil].incidence)
         # Only v1 should be present in the new column
         @test B[1, 2] == 1.0f0
         @test nnz(B[:, 2]) == 1
@@ -297,7 +297,7 @@ end
         for (name, lyr) in cpu_graph.layers
             orig = graph.layers[name]
             @test Array(lyr.incidence) == Array(orig.incidence)
-            @test lyr.vertex_features == orig.vertex_features
+            @test ensure_cpu(lyr.vertex_features) == ensure_cpu(orig.vertex_features)
             @test lyr.vertex_ids == orig.vertex_ids
             @test lyr.edge_ids == orig.edge_ids
         end

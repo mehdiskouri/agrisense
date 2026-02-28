@@ -13,6 +13,8 @@ struct ZoneConfig
     soil_type::String
 end
 
+Adapt.@adapt_structure ZoneConfig
+
 """
 Configuration for which predictive models to run on a farm.
 """
@@ -22,6 +24,8 @@ struct ModelConfig
     yield_forecast::Bool
     anomaly_detection::Bool
 end
+
+Adapt.@adapt_structure ModelConfig
 
 """
 Farm-level profile that determines active topology and behaviour.
@@ -33,6 +37,8 @@ struct FarmProfile
     zones::Vector{ZoneConfig}
     models::ModelConfig
 end
+
+Adapt.@adapt_structure FarmProfile
 
 # ---------------------------------------------------------------------------
 # Hypergraph layer — sparse incidence matrix + feature matrices + ring buffer
@@ -208,6 +214,8 @@ mutable struct LayeredHyperGraph
     vertex_index::Dict{String,Int}              # vertex_id → row index
     layers::Dict{Symbol, HyperGraphLayer}
 end
+
+Adapt.@adapt_structure LayeredHyperGraph
 
 # ---------------------------------------------------------------------------
 # Constructors from plain Dict (coming from Python bridge)
