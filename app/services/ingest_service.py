@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from collections.abc import Sequence
@@ -72,6 +73,7 @@ class IngestService:
 	async def ingest_soil(self, farm_id: uuid.UUID, readings: Sequence[SoilReadingIn]) -> IngestReceipt:
 		await self._validate_active_layer(farm_id, ENDPOINT_LAYER_TOKEN["soil"])
 		rows: list[SoilReading] = []
+		event_details: list[dict[str, Any]] = []
 		warnings: list[IngestWarning] = []
 		graph_state = await self._get_graph_state(farm_id)
 
@@ -104,12 +106,20 @@ class IngestService:
 				idx,
 				warnings,
 			)
+			event_details.append(
+				{
+					"zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
+					"vertex_id": str(item.sensor_id),
+					"payload": item.model_dump(mode="json"),
+				}
+			)
 
 		self.db.add_all(rows)
 		await self.db.flush()
 		event_ids = [int(row.id) for row in rows]
-		await self._publish_events(farm_id, "soil", rows)
+		await self._publish_events(farm_id, "soil", rows, event_details, warnings)
 		self._graph_state_cache = graph_state
+		timestamp_start, timestamp_end = self._window_from_datetimes([item.timestamp for item in readings])
 		return IngestReceipt(
 			farm_id=farm_id,
 			layer="soil",
@@ -117,17 +127,20 @@ class IngestService:
 			inserted_count=len(rows),
 			failed_count=0,
 			event_ids=event_ids,
+			timestamp_start=timestamp_start,
+			timestamp_end=timestamp_end,
 			warnings=warnings,
 		)
 
 	async def ingest_weather(self, farm_id: uuid.UUID, readings: Sequence[WeatherReadingIn]) -> IngestReceipt:
 		await self._validate_active_layer(farm_id, ENDPOINT_LAYER_TOKEN["weather"])
 		rows: list[WeatherReading] = []
+		event_details: list[dict[str, Any]] = []
 		warnings: list[IngestWarning] = []
 		graph_state = await self._get_graph_state(farm_id)
 
 		for idx, item in enumerate(readings):
-			await self._require_vertex(item.station_id, farm_id, {VertexTypeEnum.weather_station})
+			vertex = await self._require_vertex(item.station_id, farm_id, {VertexTypeEnum.weather_station})
 			row = WeatherReading(
 				station_id=item.station_id,
 				timestamp=item.timestamp,
@@ -156,12 +169,20 @@ class IngestService:
 				idx,
 				warnings,
 			)
+			event_details.append(
+				{
+					"zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
+					"vertex_id": str(item.station_id),
+					"payload": item.model_dump(mode="json"),
+				}
+			)
 
 		self.db.add_all(rows)
 		await self.db.flush()
 		event_ids = [int(row.id) for row in rows]
-		await self._publish_events(farm_id, "weather", rows)
+		await self._publish_events(farm_id, "weather", rows, event_details, warnings)
 		self._graph_state_cache = graph_state
+		timestamp_start, timestamp_end = self._window_from_datetimes([item.timestamp for item in readings])
 		return IngestReceipt(
 			farm_id=farm_id,
 			layer="weather",
@@ -169,6 +190,8 @@ class IngestService:
 			inserted_count=len(rows),
 			failed_count=0,
 			event_ids=event_ids,
+			timestamp_start=timestamp_start,
+			timestamp_end=timestamp_end,
 			warnings=warnings,
 		)
 
@@ -179,11 +202,12 @@ class IngestService:
 	) -> IngestReceipt:
 		await self._validate_active_layer(farm_id, ENDPOINT_LAYER_TOKEN["irrigation"])
 		rows: list[IrrigationEvent] = []
+		event_details: list[dict[str, Any]] = []
 		warnings: list[IngestWarning] = []
 		graph_state = await self._get_graph_state(farm_id)
 
 		for idx, item in enumerate(events):
-			await self._require_vertex(item.valve_id, farm_id, {VertexTypeEnum.valve})
+			vertex = await self._require_vertex(item.valve_id, farm_id, {VertexTypeEnum.valve})
 			row = IrrigationEvent(
 				valve_id=item.valve_id,
 				timestamp_start=item.timestamp_start,
@@ -211,12 +235,22 @@ class IngestService:
 				idx,
 				warnings,
 			)
+			event_details.append(
+				{
+					"zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
+					"vertex_id": str(item.valve_id),
+					"payload": item.model_dump(mode="json"),
+				}
+			)
 
 		self.db.add_all(rows)
 		await self.db.flush()
 		event_ids = [int(row.id) for row in rows]
-		await self._publish_events(farm_id, "irrigation", rows)
+		await self._publish_events(farm_id, "irrigation", rows, event_details, warnings)
 		self._graph_state_cache = graph_state
+		timestamps: list[datetime] = [item.timestamp_start for item in events]
+		timestamps.extend(item.timestamp_end for item in events if item.timestamp_end is not None)
+		timestamp_start, timestamp_end = self._window_from_datetimes(timestamps)
 		return IngestReceipt(
 			farm_id=farm_id,
 			layer="irrigation",
@@ -224,12 +258,15 @@ class IngestService:
 			inserted_count=len(rows),
 			failed_count=0,
 			event_ids=event_ids,
+			timestamp_start=timestamp_start,
+			timestamp_end=timestamp_end,
 			warnings=warnings,
 		)
 
 	async def ingest_npk(self, farm_id: uuid.UUID, samples: Sequence[NpkSampleIn]) -> IngestReceipt:
 		await self._validate_active_layer(farm_id, ENDPOINT_LAYER_TOKEN["npk"])
 		rows: list[NpkSample] = []
+		event_details: list[dict[str, Any]] = []
 		warnings: list[IngestWarning] = []
 		graph_state = await self._get_graph_state(farm_id)
 
@@ -249,6 +286,13 @@ class IngestService:
 			target_vertex = await self._resolve_zone_sensor_vertex(zone, farm_id)
 			if target_vertex is None:
 				warnings.append(IngestWarning(index=idx, message="no sensor vertex found in zone for npk graph update"))
+				event_details.append(
+					{
+						"zone_id": str(item.zone_id),
+						"vertex_id": None,
+						"payload": item.model_dump(mode="json"),
+					}
+				)
 				continue
 
 			features = [
@@ -264,12 +308,20 @@ class IngestService:
 				idx,
 				warnings,
 			)
+			event_details.append(
+				{
+					"zone_id": str(item.zone_id),
+					"vertex_id": str(target_vertex.id),
+					"payload": item.model_dump(mode="json"),
+				}
+			)
 
 		self.db.add_all(rows)
 		await self.db.flush()
 		event_ids = [int(row.id) for row in rows]
-		await self._publish_events(farm_id, "npk", rows)
+		await self._publish_events(farm_id, "npk", rows, event_details, warnings)
 		self._graph_state_cache = graph_state
+		timestamp_start, timestamp_end = self._window_from_datetimes([item.timestamp for item in samples])
 		return IngestReceipt(
 			farm_id=farm_id,
 			layer="npk",
@@ -277,18 +329,21 @@ class IngestService:
 			inserted_count=len(rows),
 			failed_count=0,
 			event_ids=event_ids,
+			timestamp_start=timestamp_start,
+			timestamp_end=timestamp_end,
 			warnings=warnings,
 		)
 
 	async def ingest_vision(self, farm_id: uuid.UUID, events: Sequence[VisionEventIn]) -> IngestReceipt:
 		await self._validate_active_layer(farm_id, ENDPOINT_LAYER_TOKEN["vision"])
 		rows: list[VisionEvent] = []
+		event_details: list[dict[str, Any]] = []
 		warnings: list[IngestWarning] = []
 		graph_state = await self._get_graph_state(farm_id)
 
 		for idx, item in enumerate(events):
 			await self._require_vertex(item.camera_id, farm_id, {VertexTypeEnum.camera})
-			await self._require_vertex(item.crop_bed_id, farm_id, {VertexTypeEnum.crop_bed})
+			crop_bed_vertex = await self._require_vertex(item.crop_bed_id, farm_id, {VertexTypeEnum.crop_bed})
 			row = VisionEvent(
 				camera_id=item.camera_id,
 				crop_bed_id=item.crop_bed_id,
@@ -315,12 +370,20 @@ class IngestService:
 				idx,
 				warnings,
 			)
+			event_details.append(
+				{
+					"zone_id": str(crop_bed_vertex.zone_id) if crop_bed_vertex.zone_id is not None else None,
+					"vertex_id": str(item.camera_id),
+					"payload": item.model_dump(mode="json"),
+				}
+			)
 
 		self.db.add_all(rows)
 		await self.db.flush()
 		event_ids = [int(row.id) for row in rows]
-		await self._publish_events(farm_id, "vision", rows)
+		await self._publish_events(farm_id, "vision", rows, event_details, warnings)
 		self._graph_state_cache = graph_state
+		timestamp_start, timestamp_end = self._window_from_datetimes([item.timestamp for item in events])
 		return IngestReceipt(
 			farm_id=farm_id,
 			layer="vision",
@@ -328,6 +391,8 @@ class IngestService:
 			inserted_count=len(rows),
 			failed_count=0,
 			event_ids=event_ids,
+			timestamp_start=timestamp_start,
+			timestamp_end=timestamp_end,
 			warnings=warnings,
 		)
 
@@ -338,6 +403,7 @@ class IngestService:
 	) -> IngestReceipt:
 		await self._validate_active_layer(farm_id, ENDPOINT_LAYER_TOKEN["lighting"])
 		rows: list[LightingReading] = []
+		event_details: list[dict[str, Any]] = []
 		warnings: list[IngestWarning] = []
 		graph_state = await self._get_graph_state(farm_id)
 
@@ -346,7 +412,7 @@ class IngestService:
 			if normalized != "lighting":
 				warnings.append(IngestWarning(index=idx, message="lighting payload received unsupported layer alias"))
 
-			await self._require_vertex(item.fixture_id, farm_id, {VertexTypeEnum.light_fixture})
+			vertex = await self._require_vertex(item.fixture_id, farm_id, {VertexTypeEnum.light_fixture})
 			row = LightingReading(
 				fixture_id=item.fixture_id,
 				timestamp=item.timestamp,
@@ -366,12 +432,20 @@ class IngestService:
 				idx,
 				warnings,
 			)
+			event_details.append(
+				{
+					"zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
+					"vertex_id": str(item.fixture_id),
+					"payload": item.model_dump(mode="json"),
+				}
+			)
 
 		self.db.add_all(rows)
 		await self.db.flush()
 		event_ids = [int(row.id) for row in rows]
-		await self._publish_events(farm_id, "lighting", rows)
+		await self._publish_events(farm_id, "lighting", rows, event_details, warnings)
 		self._graph_state_cache = graph_state
+		timestamp_start, timestamp_end = self._window_from_datetimes([item.timestamp for item in readings])
 		return IngestReceipt(
 			farm_id=farm_id,
 			layer="lighting",
@@ -379,6 +453,8 @@ class IngestService:
 			inserted_count=len(rows),
 			failed_count=0,
 			event_ids=event_ids,
+			timestamp_start=timestamp_start,
+			timestamp_end=timestamp_end,
 			warnings=warnings,
 		)
 
@@ -411,6 +487,8 @@ class IngestService:
 			if not records:
 				continue
 
+			graph_snapshot = copy.deepcopy(await self._get_graph_state(farm_id))
+
 			async with self.db.begin_nested():
 				try:
 					receipt = await handler(farm_id, records)
@@ -419,6 +497,7 @@ class IngestService:
 					total_failed += receipt.failed_count
 					aggregate_warnings.extend(receipt.warnings)
 				except Exception as exc:
+					self._graph_state_cache = graph_snapshot
 					failed_count = len(records)
 					total_failed += failed_count
 					warning = IngestWarning(index=0, message=f"{layer} ingest failed: {exc}")
@@ -430,6 +509,8 @@ class IngestService:
 						inserted_count=0,
 						failed_count=failed_count,
 						event_ids=[],
+						timestamp_start=None,
+						timestamp_end=None,
 						warnings=[warning],
 					)
 
@@ -439,11 +520,21 @@ class IngestService:
 		elif total_failed > 0 and total_inserted == 0:
 			overall_status = "failed"
 
+		layer_timestamps: list[datetime] = []
+		for receipt in layer_receipts.values():
+			if receipt.timestamp_start is not None:
+				layer_timestamps.append(receipt.timestamp_start)
+			if receipt.timestamp_end is not None:
+				layer_timestamps.append(receipt.timestamp_end)
+		timestamp_start, timestamp_end = self._window_from_datetimes(layer_timestamps)
+
 		return BulkIngestReceipt(
 			farm_id=farm_id,
 			status=overall_status,
 			inserted_count=total_inserted,
 			failed_count=total_failed,
+			timestamp_start=timestamp_start,
+			timestamp_end=timestamp_end,
 			warnings=aggregate_warnings,
 			layers=layer_receipts,
 		)
@@ -523,15 +614,37 @@ class IngestService:
 		row = await self.db.execute(stmt)
 		return row.scalar_one_or_none()
 
-	async def _publish_events(self, farm_id: uuid.UUID, layer: str, rows: Sequence[Any]) -> None:
+	@staticmethod
+	def _window_from_datetimes(datetimes: Sequence[datetime]) -> tuple[datetime | None, datetime | None]:
+		if not datetimes:
+			return None, None
+		return min(datetimes), max(datetimes)
+
+	@staticmethod
+	def _warnings_for_index(warnings: Sequence[IngestWarning], index: int) -> list[str]:
+		return [warning.message for warning in warnings if warning.index == index]
+
+	async def _publish_events(
+		self,
+		farm_id: uuid.UUID,
+		layer: str,
+		rows: Sequence[Any],
+		event_details: Sequence[dict[str, Any]],
+		warnings: Sequence[IngestWarning],
+	) -> None:
 		if self.redis_client is None:
 			return
 		channel = f"farm:{farm_id}:live"
-		for row in rows:
+		for idx, row in enumerate(rows):
+			detail = event_details[idx] if idx < len(event_details) else {}
 			payload = {
 				"event_type": "ingest",
 				"layer": layer,
 				"farm_id": str(farm_id),
+				"zone_id": detail.get("zone_id"),
+				"vertex_id": detail.get("vertex_id"),
+				"payload": detail.get("payload", {}),
+				"warnings": self._warnings_for_index(warnings, idx),
 				"record_id": int(row.id),
 				"ingested_at": datetime.utcnow().isoformat(),
 			}

@@ -27,8 +27,12 @@ class FakePubSub:
 	def __init__(self, payloads: list[dict[str, Any]]) -> None:
 		self.payloads = payloads
 		self.index = 0
+		self.subscribed_channel: str | None = None
+		self.unsubscribed_channel: str | None = None
+		self.closed = False
 
 	async def subscribe(self, _channel: str) -> None:
+		self.subscribed_channel = _channel
 		return None
 
 	async def get_message(self, ignore_subscribe_messages: bool, timeout: float) -> dict[str, Any] | None:
@@ -39,9 +43,11 @@ class FakePubSub:
 		return message
 
 	async def unsubscribe(self, _channel: str) -> None:
+		self.unsubscribed_channel = _channel
 		return None
 
 	async def close(self) -> None:
+		self.closed = True
 		return None
 
 
@@ -49,9 +55,11 @@ class FakeRedis:
 	def __init__(self, payloads: list[dict[str, Any]] | None = None) -> None:
 		self.payloads = payloads or []
 		self.publish = AsyncMock()
+		self.last_pubsub: FakePubSub | None = None
 
 	def pubsub(self) -> FakePubSub:
-		return FakePubSub(self.payloads)
+		self.last_pubsub = FakePubSub(self.payloads)
+		return self.last_pubsub
 
 
 @pytest.fixture

@@ -23,6 +23,8 @@ class IngestReceipt(BaseModel):
 	inserted_count: int = 0
 	failed_count: int = 0
 	event_ids: list[int] = Field(default_factory=list)
+	timestamp_start: datetime | None = None
+	timestamp_end: datetime | None = None
 	warnings: list[IngestWarning] = Field(default_factory=list)
 
 
@@ -125,5 +127,7 @@ class BulkIngestReceipt(BaseModel):
 	status: str
 	inserted_count: int = 0
 	failed_count: int = 0
+	timestamp_start: datetime | None = None
+	timestamp_end: datetime | None = None
 	warnings: list[IngestWarning] = Field(default_factory=list)
 	layers: dict[str, IngestReceipt] = Field(default_factory=dict)
