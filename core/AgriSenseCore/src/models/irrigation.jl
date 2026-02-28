@@ -1,11 +1,12 @@
 # ---------------------------------------------------------------------------
-# Irrigation scheduler — water balance model (GPU-portable)
+# Irrigation scheduler — water balance model (GPU-first)
 # ---------------------------------------------------------------------------
 
-@kernel function water_balance_kernel!(result, moisture, et0, crop_kc, rainfall, irrigation)
+@kernel function water_balance_kernel!(result, moisture, et0, crop_kc, rainfall,
+                                        soil_depth_mm)
     i = @index(Global)
     @inbounds begin
-        result[i] = moisture[i] - et0[i] * crop_kc[i] + rainfall[i] + irrigation[i]
+        result[i] = moisture[i] - (et0[i] * crop_kc[i]) / soil_depth_mm + rainfall[i] / soil_depth_mm
     end
 end
 
@@ -22,21 +23,25 @@ end
     end
 end
 
+@kernel function hargreaves_et0_kernel!(out, temp, solar_rad)
+    i = @index(Global)
+    @inbounds begin
+        t_range = max(0.3f0 * abs(temp[i]), 2.0f0)
+        out[i] = 0.0023f0 * (temp[i] + 17.8f0) * sqrt(t_range) * solar_rad[i]
+    end
+end
+
 # ---------------------------------------------------------------------------
-# Hargreaves ET₀ estimation
+# Hargreaves ET₀ estimation (scalar CPU version for reference/testing)
 # ---------------------------------------------------------------------------
 
 """
     hargreaves_et0(temp, solar_rad) -> Float32
 
-Simplified Hargreaves equation (FAO Paper 56):
-  ET₀ = 0.0023 × (T_mean + 17.8) × √(T_range) × Ra
-
-`temp` = mean air temperature (°C), `solar_rad` = extraterrestrial radiation proxy (MJ m⁻² d⁻¹).
-We approximate T_range as 0.3 × |T_mean| (default when only mean temp is available).
+Simplified Hargreaves equation (FAO Paper 56).
 """
 function hargreaves_et0(temp::Float32, solar_rad::Float32)::Float32
-    t_range = max(0.3f0 * abs(temp), 2.0f0)  # guard against zero range
+    t_range = max(0.3f0 * abs(temp), 2.0f0)
     return 0.0023f0 * (temp + 17.8f0) * sqrt(t_range) * solar_rad
 end
 
@@ -53,22 +58,19 @@ end
 # Default agronomic parameters
 # ---------------------------------------------------------------------------
 
-const DEFAULT_WILTING_POINT  = 0.15f0   # volumetric water content
+const DEFAULT_WILTING_POINT  = 0.15f0
 const DEFAULT_FIELD_CAPACITY = 0.35f0
-const DEFAULT_VALVE_CAPACITY = 0.10f0   # max irrigation per day (fraction of soil volume)
-const SOIL_DEPTH_MM          = 1000.0f0 # effective root-zone depth in mm
+const DEFAULT_VALVE_CAPACITY = 0.10f0
+const SOIL_DEPTH_MM          = 1000.0f0
 
 """
-    compute_irrigation_schedule(graph::LayeredHyperGraph, weather_forecast::Dict,
-                                 horizon_days::Int) -> Vector{Dict}
+    compute_irrigation_schedule(graph, weather_forecast, horizon_days) -> Vector{Dict}
 
-Compute per-zone irrigation recommendations for the next `horizon_days`.
-Uses the water balance equation on the CPU/GPU backend.
+Compute per-zone irrigation recommendations. GPU-accelerated when graph is on GPU.
 """
 function compute_irrigation_schedule(graph::LayeredHyperGraph,
                                       weather_forecast::Dict,
                                       horizon_days::Int)::Vector{Dict{String,Any}}
-    # Required layers
     has_soil = haskey(graph.layers, :soil)
     has_weather = haskey(graph.layers, :weather)
     has_crop = haskey(graph.layers, :crop_requirements)
@@ -79,35 +81,37 @@ function compute_irrigation_schedule(graph::LayeredHyperGraph,
     nv = graph.n_vertices
     soil_layer = graph.layers[:soil]
     weather_layer = graph.layers[:weather]
+    backend = array_backend(soil_layer.vertex_features)
 
-    # Extract current features
-    soil_moisture = Float32.(soil_layer.vertex_features[:, 1])  # col 1 = moisture
-    temp          = Float32.(weather_layer.vertex_features[:, 1])  # col 1 = temp
-    precip        = Float32.(weather_layer.vertex_features[:, 3])  # col 3 = precip
-    solar_rad     = Float32.(weather_layer.vertex_features[:, 5])  # col 5 = solar_rad
+    # Extract current features — stays on device
+    soil_moisture = soil_layer.vertex_features[:, 1]
+    temp          = weather_layer.vertex_features[:, 1]
+    solar_rad     = weather_layer.vertex_features[:, 5]
 
     # Crop coefficient from growth progress
     kc_vec = if has_crop
-        gp = Float32.(graph.layers[:crop_requirements].vertex_features[:, 2])
-        growth_progress_to_kc.(gp)
+        gp = graph.layers[:crop_requirements].vertex_features[:, 2]
+        @. Float32(0.3f0 + 0.9f0 * clamp(gp, 0.0f0, 1.0f0))
     else
-        fill(1.0f0, nv)
+        if backend isa CPU
+            fill(1.0f0, nv)
+        else
+            CUDA.ones(Float32, nv)
+        end
     end
 
-    # Agronomic parameters (uniform defaults per vertex)
-    wilting_point  = fill(DEFAULT_WILTING_POINT, nv)
-    field_capacity = fill(DEFAULT_FIELD_CAPACITY, nv)
-    valve_capacity = fill(DEFAULT_VALVE_CAPACITY, nv)
+    # Agronomic parameter vectors — on device
+    wilting_point  = backend isa CPU ? fill(DEFAULT_WILTING_POINT, nv)  : CUDA.fill(DEFAULT_WILTING_POINT, nv)
+    field_capacity = backend isa CPU ? fill(DEFAULT_FIELD_CAPACITY, nv) : CUDA.fill(DEFAULT_FIELD_CAPACITY, nv)
+    valve_capacity = backend isa CPU ? fill(DEFAULT_VALVE_CAPACITY, nv) : CUDA.fill(DEFAULT_VALVE_CAPACITY, nv)
 
-    # Forecast arrays — default to current-day values repeated
+    # Forecast arrays
+    precip_raw = weather_layer.vertex_features[:, 3]
     precip_forecast = if haskey(weather_forecast, "precip_forecast")
-        fc = Float32.(weather_forecast["precip_forecast"])
-        # Pad/truncate to horizon_days × nv
-        [length(fc) >= d ? fc[d] : precip[1] for d in 1:horizon_days]
+        Float32.(weather_forecast["precip_forecast"])
     else
-        fill(mean(precip), horizon_days)
+        nothing
     end
-
     et0_forecast = if haskey(weather_forecast, "et0_forecast")
         Float32.(weather_forecast["et0_forecast"])
     else
@@ -116,52 +120,57 @@ function compute_irrigation_schedule(graph::LayeredHyperGraph,
 
     # Run water balance over horizon
     recommendations = Dict{String,Any}[]
-    projected = copy(soil_moisture)
+    projected = copy(soil_moisture)  # stays on device
 
     for day in 1:horizon_days
-        # Per-day ET₀ estimate
+        # Per-day ET₀ — compute on device
         day_et0 = if et0_forecast !== nothing && day <= length(et0_forecast)
-            fill(Float32(et0_forecast[day]), nv)
+            val = et0_forecast[day]
+            backend isa CPU ? fill(val, nv) : CUDA.fill(val, nv)
         else
-            [hargreaves_et0(temp[v], solar_rad[v]) for v in 1:nv]
+            out = similar(temp)
+            launch_kernel!(hargreaves_et0_kernel!, backend, nv, out, temp, solar_rad)
+            out
         end
 
-        day_precip = fill(Float32(get(precip_forecast, day, 0.0f0)), nv)
+        # Per-day precip — on device
+        precip_val = if precip_forecast !== nothing && day <= length(precip_forecast)
+            precip_forecast[day]
+        else
+            Float32(mean(ensure_cpu(precip_raw)))
+        end
+        day_precip = backend isa CPU ? fill(precip_val, nv) : CUDA.fill(precip_val, nv)
 
-        # Water balance step (no irrigation applied yet)
-        # ET₀ and precip are in mm/day; convert to volumetric fraction change
+        # Water balance kernel
         result = similar(projected)
-        for i in 1:nv
-            result[i] = projected[i] - (day_et0[i] * kc_vec[i]) / SOIL_DEPTH_MM + day_precip[i] / SOIL_DEPTH_MM
-        end
+        launch_kernel!(water_balance_kernel!, backend, nv,
+                       result, projected, day_et0, kc_vec, day_precip, SOIL_DEPTH_MM)
         projected .= max.(result, 0.0f0)
 
-        # Trigger check
+        # Threshold trigger kernel
         recs = similar(projected)
-        for i in 1:nv
-            if projected[i] < wilting_point[i]
-                recs[i] = min(field_capacity[i] - projected[i], valve_capacity[i])
-            else
-                recs[i] = 0.0f0
-            end
-        end
+        launch_kernel!(threshold_trigger_kernel!, backend, nv,
+                       recs, projected, wilting_point, field_capacity, valve_capacity)
 
-        # Build per-zone recommendations using irrigation layer edges
+        # Pull to CPU for Dict building
+        proj_cpu = ensure_cpu(projected)
+        recs_cpu = ensure_cpu(recs)
+
         if has_irrig
             irrig_layer = graph.layers[:irrigation]
-            ne = size(irrig_layer.incidence, 2)
+            B_cpu = ensure_cpu(irrig_layer.incidence)
+            ne = size(B_cpu, 2)
             for e in 1:ne
-                members = findall(!iszero, @view irrig_layer.incidence[:, e])
+                members = findall(!iszero, @view B_cpu[:, e])
                 isempty(members) && continue
 
-                zone_vol = mean(recs[members])
-                zone_moisture = mean(projected[members])
+                zone_vol = mean(recs_cpu[members])
+                zone_moisture = mean(proj_cpu[members])
                 do_irrigate = zone_vol > 0.0f0
 
                 zone_id = e <= length(irrig_layer.edge_ids) ?
                           irrig_layer.edge_ids[e] : "zone_$e"
 
-                # Priority: higher deficit → higher priority
                 deficit = max(DEFAULT_WILTING_POINT - zone_moisture, 0.0f0)
                 priority = clamp(deficit / (DEFAULT_FIELD_CAPACITY - DEFAULT_WILTING_POINT),
                                  0.0f0, 1.0f0)
@@ -185,23 +194,22 @@ function compute_irrigation_schedule(graph::LayeredHyperGraph,
                 ))
             end
         else
-            # No irrigation layer — one recommendation per vertex
             for v in 1:nv
                 vid = v <= length(soil_layer.vertex_ids) ?
                       soil_layer.vertex_ids[v] : "v_$v"
                 push!(recommendations, Dict{String,Any}(
                     "zone_id" => vid,
                     "day" => day,
-                    "irrigate" => recs[v] > 0.0f0,
-                    "volume_liters" => Float64(recs[v] * 1000.0f0),
-                    "priority" => Float64(clamp(recs[v] / DEFAULT_VALVE_CAPACITY, 0.0, 1.0)),
-                    "projected_moisture" => Float64(projected[v]),
-                    "trigger_reason" => recs[v] > 0.0f0 ? "below_wilting_point" : "moisture_adequate",
+                    "irrigate" => recs_cpu[v] > 0.0f0,
+                    "volume_liters" => Float64(recs_cpu[v] * 1000.0f0),
+                    "priority" => Float64(clamp(recs_cpu[v] / DEFAULT_VALVE_CAPACITY, 0.0, 1.0)),
+                    "projected_moisture" => Float64(proj_cpu[v]),
+                    "trigger_reason" => recs_cpu[v] > 0.0f0 ? "below_wilting_point" : "moisture_adequate",
                 ))
             end
         end
 
-        # Apply irrigation to projected moisture for subsequent days
+        # Apply irrigation to projected moisture for subsequent days (on device)
         projected .+= recs
     end
 

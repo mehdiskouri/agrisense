@@ -45,6 +45,7 @@ function make_yield_graph(;
     )
     profile = FarmProfile(config)
     graph = build_hypergraph(profile, config["vertices"], config["edges"])
+    graph = to_cpu(graph)  # tests validate correctness on CPU; GPU tested in test_gpu.jl
 
     # Populate features
     for v in 1:nv

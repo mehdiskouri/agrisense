@@ -82,6 +82,55 @@ function Adapt.adapt_structure(to, layer::HyperGraphLayer)
 end
 
 # ---------------------------------------------------------------------------
+# Backend detection from array type — determines GPU vs CPU from the data itself
+# ---------------------------------------------------------------------------
+
+"""
+    array_backend(arr) -> KernelAbstractions.Backend
+
+Return the compute backend appropriate for `arr`.
+`CuArray` → `CUDABackend()`, everything else → `CPU()`.
+"""
+function array_backend(arr::AbstractArray)
+    HAS_CUDA && arr isa CUDA.AnyCuArray ? CUDABackend() : CPU()
+end
+
+"""
+    launch_kernel!(kern, backend, ndrange, args...)
+
+Thin wrapper: launch a KernelAbstractions kernel and synchronize.
+"""
+function launch_kernel!(kern, backend, ndrange, args...)
+    kern(backend, 256)(args...; ndrange=ndrange)
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+    ensure_cpu(arr) -> Array
+
+Bring an array back to CPU. No-op for plain `Array`.
+"""
+ensure_cpu(arr::Array) = arr
+ensure_cpu(arr::AbstractArray) = Array(arr)
+ensure_cpu(arr::AbstractSparseMatrix) = SparseMatrixCSC{Float32,Int32}(sparse(Array(arr)))
+
+# ---------------------------------------------------------------------------
+# GPU-safe push_features! kernel
+# ---------------------------------------------------------------------------
+
+@kernel function push_features_kernel!(vf, fh, @Const(features_gpu),
+                                        vertex_idx::Int32, head::Int32, n_feat::Int32)
+    f = @index(Global)
+    @inbounds begin
+        if f <= n_feat
+            vf[vertex_idx, f] = features_gpu[f]
+            fh[vertex_idx, f, head] = features_gpu[f]
+        end
+    end
+end
+
+# ---------------------------------------------------------------------------
 # Ring buffer helpers
 # ---------------------------------------------------------------------------
 
@@ -89,20 +138,28 @@ end
     push_features!(layer, vertex_idx, features)
 
 Write `features` into the current snapshot AND advance the ring buffer.
+GPU-safe: uses a kernel when arrays are on GPU.
 """
 function push_features!(layer::HyperGraphLayer, vertex_idx::Int,
                         features::Vector{Float32})
     d = size(layer.vertex_features, 2)
     n_feat = min(length(features), d)
-
-    # Update current snapshot
-    layer.vertex_features[vertex_idx, 1:n_feat] .= @view features[1:n_feat]
-
-    # Write into ring buffer at current head position
     buf_size = size(layer.feature_history, 3)
-    layer.feature_history[vertex_idx, 1:n_feat, layer.history_head] .= @view features[1:n_feat]
 
-    # Advance head (wraps around)
+    backend = array_backend(layer.vertex_features)
+    if backend isa CPU
+        # CPU path — direct scalar indexing
+        layer.vertex_features[vertex_idx, 1:n_feat] .= @view features[1:n_feat]
+        layer.feature_history[vertex_idx, 1:n_feat, layer.history_head] .= @view features[1:n_feat]
+    else
+        # GPU path — upload features once, launch kernel
+        features_gpu = CuArray(features[1:n_feat])
+        launch_kernel!(push_features_kernel!, backend, n_feat,
+                       layer.vertex_features, layer.feature_history, features_gpu,
+                       Int32(vertex_idx), Int32(layer.history_head), Int32(n_feat))
+    end
+
+    # Head/length are CPU scalars on the mutable struct
     layer.history_head = mod1(layer.history_head + 1, buf_size)
     layer.history_length = min(layer.history_length + 1, buf_size)
     return nothing
@@ -113,6 +170,7 @@ end
 
 Return `(d, valid_length)` matrix of historical readings for a vertex,
 ordered oldest-first.  Returns a `(d, 0)` matrix if buffer is empty.
+Always returns a CPU `Matrix{Float32}`.
 """
 function get_history(layer::HyperGraphLayer, vertex_idx::Int)::Matrix{Float32}
     d = size(layer.vertex_features, 2)
@@ -123,17 +181,18 @@ function get_history(layer::HyperGraphLayer, vertex_idx::Int)::Matrix{Float32}
         return zeros(Float32, d, 0)
     end
 
+    # Pull the vertex's full history slice to CPU if needed
+    hist_slice = ensure_cpu(layer.feature_history[vertex_idx:vertex_idx, :, :])  # (1, d, buf_size)
+
     result = Matrix{Float32}(undef, d, len)
     if len < buf_size
-        # Buffer not yet full — data is in positions 1:len
         for t in 1:len
-            result[:, t] .= @view layer.feature_history[vertex_idx, :, t]
+            result[:, t] .= @view hist_slice[1, :, t]
         end
     else
-        # Buffer full — oldest is at head (it's the next to be overwritten)
         for t in 1:len
             src_idx = mod1(layer.history_head + t - 1, buf_size)
-            result[:, t] .= @view layer.feature_history[vertex_idx, :, src_idx]
+            result[:, t] .= @view hist_slice[1, :, src_idx]
         end
     end
     return result

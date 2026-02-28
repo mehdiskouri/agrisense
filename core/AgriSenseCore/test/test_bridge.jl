@@ -26,7 +26,8 @@ function make_bridge_graph()
         ],
     )
     profile = FarmProfile(config)
-    build_hypergraph(profile, config["vertices"], config["edges"])
+    graph = build_hypergraph(profile, config["vertices"], config["edges"])
+    to_cpu(graph)  # bridge tests validate serialization on CPU arrays
 end
 
 @testset "Serialization Round-trip" begin

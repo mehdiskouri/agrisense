@@ -48,6 +48,7 @@ function make_nutrient_graph(;
     )
     profile = FarmProfile(config)
     graph = build_hypergraph(profile, config["vertices"], config["edges"])
+    graph = to_cpu(graph)  # tests validate correctness on CPU; GPU tested in test_gpu.jl
 
     # Populate :npk features (3-dim: N, P, K)
     for v in 1:nv

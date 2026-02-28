@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Anomaly detection via statistical process control (GPU-portable)
+# Anomaly detection via statistical process control (GPU-first)
 # ---------------------------------------------------------------------------
 
 @kernel function rolling_stats_kernel!(means, stds, history, valid_length_arr, d)
@@ -81,6 +81,7 @@ end
     compute_anomaly_detection(graph::LayeredHyperGraph) -> Vector{Dict}
 
 Detect anomalies using rolling mean/σ and Western Electric rules on sensor streams.
+GPU-accelerated: kernels compute on device, results pulled to CPU for Dict output.
 """
 function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String,Any}}
     results = Dict{String,Any}[]
@@ -108,52 +109,47 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
         layer.history_length < MIN_HISTORY_FOR_ANOMALY && continue
 
         d = size(layer.vertex_features, 2)
+        backend = array_backend(layer.vertex_features)
+        ndrange = nv * d
 
-        # Compute rolling stats from ring buffer (CPU — graph data always on CPU)
-        means = zeros(Float32, nv, d)
-        stds  = zeros(Float32, nv, d)
+        # Allocate on device
+        means   = backend isa CPU ? zeros(Float32, nv, d) :
+                  (HAS_CUDA ? CUDA.zeros(Float32, nv, d) : zeros(Float32, nv, d))
+        stds    = backend isa CPU ? zeros(Float32, nv, d) :
+                  (HAS_CUDA ? CUDA.zeros(Float32, nv, d) : zeros(Float32, nv, d))
+        flags   = backend isa CPU ? zeros(Int32, nv, d) :
+                  (HAS_CUDA ? CUDA.zeros(Int32, nv, d) : zeros(Int32, nv, d))
+        current = layer.vertex_features   # already on device
 
-        valid_len = layer.history_length
-        for v in 1:nv, f in 1:d
-            s = 0.0f0
-            for t in 1:valid_len
-                s += layer.feature_history[v, f, t]
-            end
-            m = s / Float32(valid_len)
-            means[v, f] = m
-            ss = 0.0f0
-            for t in 1:valid_len
-                diff = layer.feature_history[v, f, t] - m
-                ss += diff * diff
-            end
-            stds[v, f] = sqrt(ss / Float32(valid_len))
-        end
+        # Valid length as 1-element device array for kernel access
+        valid_len_arr = backend isa CPU ? Int32[layer.history_length] :
+                        (HAS_CUDA ? CuArray(Int32[layer.history_length]) :
+                         Int32[layer.history_length])
 
-        # Western Electric check on current values
-        flags = zeros(Int32, nv, d)
-        current = Float32.(layer.vertex_features)
+        # Rolling stats kernel
+        launch_kernel!(rolling_stats_kernel!, backend, ndrange,
+                       means, stds, layer.feature_history, valid_len_arr, Int32(d))
 
-        for v in 1:nv, f in 1:d
-            s = stds[v, f]
-            s < 1.0f-8 && continue
-            deviation = abs(current[v, f] - means[v, f])
-            if deviation > sigma3 * s
-                flags[v, f] = 2
-            elseif deviation > sigma2 * s
-                flags[v, f] = 1
-            end
-        end
+        # Western Electric kernel
+        launch_kernel!(western_electric_kernel!, backend, ndrange,
+                       flags, current, means, stds, sigma2, sigma3)
+
+        # Pull results to CPU for Dict building
+        flags_cpu   = ensure_cpu(flags)
+        means_cpu   = ensure_cpu(means)
+        stds_cpu    = ensure_cpu(stds)
+        current_cpu = ensure_cpu(current)
 
         # Collect flagged anomalies
         fnames = get(feature_names, layer_sym, ["feature_$i" for i in 1:d])
         for v in 1:nv, f in 1:d
-            flags[v, f] == 0 && continue
+            flags_cpu[v, f] == 0 && continue
 
             vid = v <= length(layer.vertex_ids) ? layer.vertex_ids[v] : "v_$v"
             fname = f <= length(fnames) ? fnames[f] : "feature_$f"
-            severity = flags[v, f] == 2 ? "alarm" : "warning"
-            sigma_dev = stds[v, f] > 1.0f-8 ?
-                        abs(current[v, f] - means[v, f]) / stds[v, f] : 0.0f0
+            severity = flags_cpu[v, f] == 2 ? "alarm" : "warning"
+            sigma_dev = stds_cpu[v, f] > 1.0f-8 ?
+                        abs(current_cpu[v, f] - means_cpu[v, f]) / stds_cpu[v, f] : 0.0f0
 
             # Track for cross-layer correlation
             if layer_sym == :soil
@@ -168,9 +164,9 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
                 "feature" => fname,
                 "anomaly_type" => anomaly_type_from_layer(layer_sym),
                 "severity" => severity,
-                "current_value" => Float64(current[v, f]),
-                "rolling_mean" => Float64(means[v, f]),
-                "rolling_std" => Float64(stds[v, f]),
+                "current_value" => Float64(current_cpu[v, f]),
+                "rolling_mean" => Float64(means_cpu[v, f]),
+                "rolling_std" => Float64(stds_cpu[v, f]),
                 "sigma_deviation" => Float64(sigma_dev),
                 "cross_layer_confirmed" => false,  # updated below
             ))
@@ -178,8 +174,9 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
 
         # Vision layer: additionally flag high anomaly_score even without history deviation
         if layer_sym == :vision && d >= 3
+            vision_feat_cpu = ensure_cpu(layer.vertex_features)
             for v in 1:nv
-                if layer.vertex_features[v, 3] > 0.7f0  # high CV anomaly score
+                if vision_feat_cpu[v, 3] > 0.7f0  # high CV anomaly score
                     push!(vision_anomaly_vertices, v)
                 end
             end

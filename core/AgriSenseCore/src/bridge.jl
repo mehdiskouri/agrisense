@@ -9,17 +9,37 @@
     build_graph(farm_config::Dict) -> Dict
 
 Build a layered hypergraph from a farm configuration dict.
-Returns a serialized graph state (CPU arrays) for storage on the Python side.
+Caches the GPU-resident graph; returns serialized CPU state for Python.
 """
 function build_graph(farm_config::Dict)::Dict{String,Any}
     profile = FarmProfile(farm_config)
-    vertices = get(farm_config, "vertices", Dict{String,Any}[])
-    edges = get(farm_config, "edges", Dict{String,Any}[])
+    vertices = Vector{Dict{String,Any}}(get(farm_config, "vertices", Dict{String,Any}[]))
+    edges = Vector{Dict{String,Any}}(get(farm_config, "edges", Dict{String,Any}[]))
 
     graph = build_hypergraph(profile, vertices, edges)
 
+    # Cache for subsequent calls
+    cache_graph!(profile.farm_id, graph)
+
     # Serialize to plain dicts for Python
     return serialize_graph(graph)
+end
+
+# ---------------------------------------------------------------------------
+# Helper: retrieve cached graph or deserialize from state
+# ---------------------------------------------------------------------------
+
+function _get_graph(graph_state::Dict)::LayeredHyperGraph
+    farm_id = get(graph_state, "farm_id", "")
+    cached = get_cached_graph(farm_id)
+    cached !== nothing && return cached
+    graph = deserialize_graph(graph_state)
+    # Promote to GPU and cache for next call
+    if HAS_CUDA
+        graph = to_gpu(graph)
+    end
+    cache_graph!(graph.farm_id, graph)
+    return graph
 end
 
 """
@@ -28,7 +48,7 @@ end
 Query current status of a zone across all active layers.
 """
 function query_farm_status(graph_state::Dict, zone_id::String)::Dict{String,Any}
-    graph = deserialize_graph(graph_state)
+    graph = _get_graph(graph_state)
     status = Dict{String,Any}()
     for (layer_name, _) in graph.layers
         status[string(layer_name)] = query_layer(graph, layer_name, zone_id)
@@ -41,7 +61,7 @@ end
 """
 function irrigation_schedule(graph_state::Dict, horizon_days::Int,
                               weather_forecast::Dict=Dict{String,Any}())::Vector{Dict{String,Any}}
-    graph = deserialize_graph(graph_state)
+    graph = _get_graph(graph_state)
     return compute_irrigation_schedule(graph, weather_forecast, horizon_days)
 end
 
@@ -49,7 +69,7 @@ end
     nutrient_report(graph_state::Dict) -> Vector{Dict}
 """
 function nutrient_report(graph_state::Dict)::Vector{Dict{String,Any}}
-    graph = deserialize_graph(graph_state)
+    graph = _get_graph(graph_state)
     return compute_nutrient_report(graph)
 end
 
@@ -57,7 +77,7 @@ end
     yield_forecast(graph_state::Dict) -> Vector{Dict}
 """
 function yield_forecast(graph_state::Dict)::Vector{Dict{String,Any}}
-    graph = deserialize_graph(graph_state)
+    graph = _get_graph(graph_state)
     return compute_yield_forecast(graph)
 end
 
@@ -65,20 +85,20 @@ end
     detect_anomalies(graph_state::Dict) -> Vector{Dict}
 """
 function detect_anomalies(graph_state::Dict)::Vector{Dict{String,Any}}
-    graph = deserialize_graph(graph_state)
+    graph = _get_graph(graph_state)
     return compute_anomaly_detection(graph)
 end
 
 """
     update_features(graph_state, layer, vertex_id, features) -> Dict
 
-Deserialize the graph, push features into the specified layer (snapshot + ring buffer),
+Use cached graph, push features into the specified layer (snapshot + ring buffer),
 and return the re-serialized graph state.
 """
 function update_features(graph_state::Dict, layer::String,
                           vertex_id::String,
                           features::Vector)::Dict{String,Any}
-    graph = deserialize_graph(graph_state)
+    graph = _get_graph(graph_state)
     lsym = Symbol(layer)
     haskey(graph.layers, lsym) || error("update_features: layer '$layer' not found")
     haskey(graph.vertex_index, vertex_id) ||
@@ -98,7 +118,7 @@ Returns a status dict.
 """
 function train_yield_residual(graph_state::Dict,
                                outcomes::Dict)::Dict{String,Any}
-    graph = deserialize_graph(graph_state)
+    graph = _get_graph(graph_state)
     actual = Dict{String,Float32}(
         string(k) => Float32(v) for (k, v) in outcomes
     )
@@ -121,21 +141,23 @@ function generate_synthetic(; farm_type::String="greenhouse",
 end
 
 # ---------------------------------------------------------------------------
-# Internal serialization helpers
+# Internal serialization helpers (GPU-safe)
 # ---------------------------------------------------------------------------
 
 function serialize_graph(graph::LayeredHyperGraph)::Dict{String,Any}
     layers_dict = Dict{String,Any}()
     for (name, layer) in graph.layers
-        I, J, V = findnz(layer.incidence)  # single call instead of triple
+        # Always pull to CPU before findnz — CuSparse findnz hangs
+        B_cpu = ensure_cpu(layer.incidence)
+        I, J, V = findnz(B_cpu)
         layers_dict[string(name)] = Dict{String,Any}(
-            "incidence_rows" => I,
-            "incidence_cols" => J,
-            "incidence_vals" => V,
-            "n_vertices" => size(layer.incidence, 1),
-            "n_edges" => size(layer.incidence, 2),
-            "vertex_features" => Array(layer.vertex_features),
-            "feature_history" => Array(layer.feature_history),
+            "incidence_rows" => Vector{Int32}(I),
+            "incidence_cols" => Vector{Int32}(J),
+            "incidence_vals" => Vector{Float32}(V),
+            "n_vertices" => size(B_cpu, 1),
+            "n_edges" => size(B_cpu, 2),
+            "vertex_features" => Array(ensure_cpu(layer.vertex_features)),
+            "feature_history" => Array(ensure_cpu(layer.feature_history)),
             "history_head" => layer.history_head,
             "history_length" => layer.history_length,
             "edge_metadata" => layer.edge_metadata,

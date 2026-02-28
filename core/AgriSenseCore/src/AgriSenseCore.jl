@@ -99,5 +99,21 @@ export MIN_HISTORY_FOR_ANOMALY
 
 # GPU utilities
 export get_backend, get_array_type, HAS_CUDA
+export array_backend, launch_kernel!, ensure_cpu
+
+# Graph cache
+export GRAPH_CACHE, cache_graph!, get_cached_graph, evict_graph!, clear_cache!
+
+# GPU kernels (for testing / advanced use)
+export npk_deficit_kernel!, severity_score_kernel!
+export fao_yield_kernel!, nutrient_stress_kernel!, weather_stress_kernel!
+export rolling_stats_kernel!, western_electric_kernel!
+export water_balance_kernel!, threshold_trigger_kernel!, hargreaves_et0_kernel!
+export push_features_kernel!
+
+# Anomaly helpers
+export anomaly_type_from_layer
+export severity_to_urgency, suggest_amendment
+export SOIL_DEPTH_MM
 
 end # module AgriSenseCore
