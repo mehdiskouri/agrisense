@@ -23,6 +23,37 @@ class FakeAsyncSession:
 		self.execute = AsyncMock()
 
 
+class FakePubSub:
+	def __init__(self, payloads: list[dict[str, Any]]) -> None:
+		self.payloads = payloads
+		self.index = 0
+
+	async def subscribe(self, _channel: str) -> None:
+		return None
+
+	async def get_message(self, ignore_subscribe_messages: bool, timeout: float) -> dict[str, Any] | None:
+		if self.index >= len(self.payloads):
+			return None
+		message = self.payloads[self.index]
+		self.index += 1
+		return message
+
+	async def unsubscribe(self, _channel: str) -> None:
+		return None
+
+	async def close(self) -> None:
+		return None
+
+
+class FakeRedis:
+	def __init__(self, payloads: list[dict[str, Any]] | None = None) -> None:
+		self.payloads = payloads or []
+		self.publish = AsyncMock()
+
+	def pubsub(self) -> FakePubSub:
+		return FakePubSub(self.payloads)
+
+
 @pytest.fixture
 def fake_db_session() -> FakeAsyncSession:
 	"""A lightweight async-session stub for dependency overrides in API tests."""
@@ -43,6 +74,12 @@ def bridge_stub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 	monkeypatch.setattr(julia_bridge, "build_graph", lambda _config: graph_state)
 	monkeypatch.setattr(julia_bridge, "query_farm_status", lambda _graph, _zone: {"status": "ok"})
 	return graph_state
+
+
+@pytest.fixture
+def fake_redis() -> FakeRedis:
+	"""Reusable fake Redis client with async publish and pubsub behavior."""
+	return FakeRedis()
 
 
 @pytest.fixture
