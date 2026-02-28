@@ -69,7 +69,8 @@ function generate_vision_data(n_cameras::Int, n_beds::Int, n_steps::Int;
                                                rate=dropout_rate,
                                                seed=seed + 402,
                                                use_gpu=use_gpu)
-    conf_nan = ifelse.(mask, Float32(NaN), Float32.(confidence))
+    conf_backend = to_backend(Float32.(confidence); use_gpu=use_gpu)
+    conf_nan = ifelse.(mask, Float32(NaN), conf_backend)
 
     # For anomaly code, set -1 where missing (still plain integer matrix)
     anomaly_out = copy(anomaly_code)

@@ -83,7 +83,7 @@ function generate(farm_type::Symbol, days::Int, seed::Int)::Dict{String,Any}
     vision = n_lighting > 0 ?
         generate_vision_data(n_cameras, n_beds, n_steps;
                              seed=seed + 50,
-                             use_gpu=false,
+                             use_gpu=use_gpu,
                              dropout_rate=SYNTHETIC_DROPOUT_RATE) :
         Dict{String,Any}("layer" => "vision", "n_cameras" => 0, "n_beds" => 0, "n_steps" => n_steps,
                          "camera_for_bed" => Int32[],

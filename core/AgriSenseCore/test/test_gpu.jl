@@ -542,12 +542,28 @@ end
         @test abs(σ_cpu - σ_gpu) <= 2.0
     end
 
+    @testset "generate_vision_data GPU contract and shape" begin
+        cpu = AgriSenseCore.generate_vision_data(2, 10, 96; seed=111, use_gpu=false)
+        gpu = AgriSenseCore.generate_vision_data(2, 10, 96; seed=111, use_gpu=true)
+
+        @test size(gpu["canopy_coverage_pct"]) == size(cpu["canopy_coverage_pct"])
+        @test size(gpu["confidence"]) == size(cpu["confidence"])
+        @test size(gpu["missing_mask"]) == size(cpu["missing_mask"])
+        @test gpu["canopy_coverage_pct"] isa Matrix{Float32}
+        @test gpu["confidence"] isa Matrix{Float32}
+        @test gpu["missing_mask"] isa BitMatrix
+    end
+
     @testset "GPU generate_synthetic returns CPU-safe arrays" begin
         result = AgriSenseCore.generate(:greenhouse, 14, 123)
         soil = result["layers"]["soil"]
+        vision = result["layers"]["vision"]
         @test soil["moisture"] isa Matrix{Float32}
         @test soil["temperature"] isa Matrix{Float32}
         @test soil["missing_mask"] isa BitMatrix
+        @test vision["canopy_coverage_pct"] isa Matrix{Float32}
+        @test vision["confidence"] isa Matrix{Float32}
+        @test vision["missing_mask"] isa BitMatrix
     end
 end
 
