@@ -7,7 +7,10 @@ from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
-from app.models.base import Base
+
+# Import Base from app.models (NOT app.models.base) so that every model
+# module is imported and its tables are registered on Base.metadata.
+from app.models import Base
 
 # Alembic Config object
 config = context.config
@@ -28,6 +31,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+        compare_server_default=True,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -35,7 +40,12 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection):  # type: ignore[no-untyped-def]
     """Run migrations with a live connection."""
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
