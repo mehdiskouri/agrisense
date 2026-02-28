@@ -37,11 +37,12 @@ function query_farm_status(graph_state::Dict, zone_id::String)::Dict{String,Any}
 end
 
 """
-    irrigation_schedule(graph_state::Dict, horizon_days::Int) -> Vector{Dict}
+    irrigation_schedule(graph_state::Dict, horizon_days::Int, weather_forecast::Dict=Dict()) -> Vector{Dict}
 """
-function irrigation_schedule(graph_state::Dict, horizon_days::Int)::Vector{Dict{String,Any}}
+function irrigation_schedule(graph_state::Dict, horizon_days::Int,
+                              weather_forecast::Dict=Dict{String,Any}())::Vector{Dict{String,Any}}
     graph = deserialize_graph(graph_state)
-    return compute_irrigation_schedule(graph, Dict{String,Any}(), horizon_days)
+    return compute_irrigation_schedule(graph, weather_forecast, horizon_days)
 end
 
 """
@@ -69,6 +70,48 @@ function detect_anomalies(graph_state::Dict)::Vector{Dict{String,Any}}
 end
 
 """
+    update_features(graph_state, layer, vertex_id, features) -> Dict
+
+Deserialize the graph, push features into the specified layer (snapshot + ring buffer),
+and return the re-serialized graph state.
+"""
+function update_features(graph_state::Dict, layer::String,
+                          vertex_id::String,
+                          features::Vector)::Dict{String,Any}
+    graph = deserialize_graph(graph_state)
+    lsym = Symbol(layer)
+    haskey(graph.layers, lsym) || error("update_features: layer '$layer' not found")
+    haskey(graph.vertex_index, vertex_id) ||
+        error("update_features: vertex '$vertex_id' not found")
+
+    vidx = graph.vertex_index[vertex_id]
+    push_features!(graph.layers[lsym], vidx, Float32.(features))
+    return serialize_graph(graph)
+end
+
+"""
+    train_yield_residual(graph_state, outcomes) -> Dict
+
+Fit the ridge residual model from actual yield outcomes.
+`outcomes` should map vertex_id → observed yield (Float64 or Float32).
+Returns a status dict.
+"""
+function train_yield_residual(graph_state::Dict,
+                               outcomes::Dict)::Dict{String,Any}
+    graph = deserialize_graph(graph_state)
+    actual = Dict{String,Float32}(
+        string(k) => Float32(v) for (k, v) in outcomes
+    )
+    train_yield_residual!(graph, actual)
+    has_coeff = RESIDUAL_COEFFICIENTS[] !== nothing
+    return Dict{String,Any}(
+        "status" => has_coeff ? "trained" : "insufficient_data",
+        "n_observations" => length(actual),
+        "n_coefficients" => has_coeff ? length(RESIDUAL_COEFFICIENTS[]) : 0,
+    )
+end
+
+"""
     generate_synthetic(; farm_type::String, days::Int, seed::Int) -> Dict
 """
 function generate_synthetic(; farm_type::String="greenhouse",
@@ -92,6 +135,9 @@ function serialize_graph(graph::LayeredHyperGraph)::Dict{String,Any}
             "n_vertices" => size(layer.incidence, 1),
             "n_edges" => size(layer.incidence, 2),
             "vertex_features" => Array(layer.vertex_features),
+            "feature_history" => Array(layer.feature_history),
+            "history_head" => layer.history_head,
+            "history_length" => layer.history_length,
             "edge_metadata" => layer.edge_metadata,
             "vertex_ids" => layer.vertex_ids,
             "edge_ids" => layer.edge_ids,
@@ -124,10 +170,19 @@ function deserialize_graph(state::Dict)::LayeredHyperGraph
             ne = Int(ld["n_edges"])
             B = sparse(rows, cols, vals, nv, ne)
             vf = Float32.(ld["vertex_features"])
+            # Ring buffer — restore from serialized state or initialise empty
+            fh = if haskey(ld, "feature_history")
+                Float32.(ld["feature_history"])
+            else
+                d = size(vf, 2)
+                zeros(Float32, nv, d, DEFAULT_HISTORY_SIZE)
+            end
+            hhead = Int(get(ld, "history_head", 1))
+            hlen  = Int(get(ld, "history_length", 0))
             em = Vector{Dict{String,Any}}(ld["edge_metadata"])
             vids = String.(ld["vertex_ids"])
             eids = String.(ld["edge_ids"])
-            layers[Symbol(name)] = HyperGraphLayer(B, vf, em, vids, eids)
+            layers[Symbol(name)] = HyperGraphLayer(B, vf, fh, hhead, hlen, em, vids, eids)
         catch e
             error("deserialize_graph: failed to reconstruct layer '$name' — $(sprint(showerror, e))")
         end

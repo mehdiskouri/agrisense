@@ -14,7 +14,7 @@ const LAYER_FEATURE_DIMS = Dict{Symbol,Int}(
     :npk         => 3,   # nitrogen, phosphorus, potassium
     :lighting    => 3,   # par, dli, spectrum_index
     :vision      => 4,   # canopy_coverage, growth_stage, anomaly_score, ndvi
-    :crop_requirements => 2,  # target_yield, growth_progress
+    :crop_requirements => 5,  # target_yield, growth_progress, n_target, p_target, k_target
 )
 
 """
@@ -71,10 +71,13 @@ function build_hypergraph(profile::FarmProfile,
                    n_vertices, n_edges)
 
         # Initialize vertex features with correct dimensionality per layer
-        vertex_features = zeros(Float32, n_vertices, feature_dim(layer_sym))
+        d = feature_dim(layer_sym)
+        vertex_features = zeros(Float32, n_vertices, d)
+        feature_history = zeros(Float32, n_vertices, d, DEFAULT_HISTORY_SIZE)
 
         layers[layer_sym] = HyperGraphLayer(
-            B, vertex_features, edge_meta, vertex_ids, edge_ids,
+            B, vertex_features, feature_history, 1, 0,
+            edge_meta, vertex_ids, edge_ids,
         )
     end
 
@@ -197,10 +200,12 @@ function add_hyperedge!(graph::LayeredHyperGraph,
         end
         B = sparse(row_inds, ones(Int32, length(row_inds)), ones(Float32, length(row_inds)),
                    nv, 1)
-        vf = zeros(Float32, nv, feature_dim(layer))
+        d = feature_dim(layer)
+        vf = zeros(Float32, nv, d)
+        fh = zeros(Float32, nv, d, DEFAULT_HISTORY_SIZE)
         all_vids = collect(keys(graph.vertex_index))
         sort!(all_vids; by=v -> graph.vertex_index[v])
-        graph.layers[layer] = HyperGraphLayer(B, vf, [metadata], all_vids, [edge_id])
+        graph.layers[layer] = HyperGraphLayer(B, vf, fh, 1, 0, [metadata], all_vids, [edge_id])
         return nothing
     end
 
@@ -260,10 +265,14 @@ function add_vertex!(graph::LayeredHyperGraph, vertex_id::String)::Int
 
     for (_, lyr) in graph.layers
         nv_old, ne = size(lyr.incidence)
+        d = size(lyr.vertex_features, 2)
+        buf_size = size(lyr.feature_history, 3)
         # Add a zero row to incidence
         lyr.incidence = vcat(lyr.incidence, spzeros(Float32, 1, ne))
         # Add a zero row to vertex_features
-        lyr.vertex_features = vcat(lyr.vertex_features, zeros(Float32, 1, size(lyr.vertex_features, 2)))
+        lyr.vertex_features = vcat(lyr.vertex_features, zeros(Float32, 1, d))
+        # Add a zero row to feature_history
+        lyr.feature_history = cat(lyr.feature_history, zeros(Float32, 1, d, buf_size); dims=1)
         push!(lyr.vertex_ids, vertex_id)
     end
     return new_idx
@@ -285,9 +294,58 @@ function to_cpu(graph::LayeredHyperGraph)::LayeredHyperGraph
         # Collect to CPU arrays first, then convert to standard types
         B_cpu = SparseMatrixCSC{Float32,Int32}(sparse(Array(layer.incidence)))
         vf = Matrix{Float32}(Array(layer.vertex_features))
-        cpu_layers[name] = HyperGraphLayer(B_cpu, vf, layer.edge_metadata,
+        fh = Array{Float32, 3}(Array(layer.feature_history))
+        cpu_layers[name] = HyperGraphLayer(B_cpu, vf, fh,
+                                            layer.history_head, layer.history_length,
+                                            layer.edge_metadata,
                                             layer.vertex_ids, layer.edge_ids)
     end
     LayeredHyperGraph(graph.farm_id, graph.n_vertices,
                       copy(graph.vertex_index), cpu_layers)
+end
+
+# ---------------------------------------------------------------------------
+# Aggregation helpers used by predictive models
+# ---------------------------------------------------------------------------
+
+"""
+    aggregate_by_edge(layer; reduce=mean) -> Matrix{Float32}
+
+Compute per-hyperedge aggregation of vertex features.
+Returns a `(n_edges, d)` matrix where each row is `reduce` of member-vertex features.
+
+Supported `reduce`: `mean`, `sum`, `maximum`.
+"""
+function aggregate_by_edge(layer::HyperGraphLayer; reduce::Function=mean)::Matrix{Float32}
+    B = layer.incidence           # (n_vertices, n_edges)
+    vf = layer.vertex_features    # (n_vertices, d)
+    nv, ne = size(B)
+    d = size(vf, 2)
+
+    result = zeros(Float32, ne, d)
+    for e in 1:ne
+        members = findall(!iszero, @view B[:, e])
+        isempty(members) && continue
+        for col in 1:d
+            vals = Float32[vf[v, col] for v in members]
+            result[e, col] = reduce(vals)
+        end
+    end
+    return result
+end
+
+"""
+    multi_layer_features(graph, layers::Vector{Symbol}) -> Matrix{Float32}
+
+Horizontally concatenate vertex features from several layers, producing an
+`(n_vertices, sum_of_dims)` matrix.  Layers not present in the graph are skipped.
+"""
+function multi_layer_features(graph::LayeredHyperGraph, layers::Vector{Symbol})::Matrix{Float32}
+    cols = Matrix{Float32}[]
+    for lsym in layers
+        haskey(graph.layers, lsym) || continue
+        push!(cols, Matrix{Float32}(graph.layers[lsym].vertex_features))
+    end
+    isempty(cols) && return zeros(Float32, graph.n_vertices, 0)
+    return hcat(cols...)
 end

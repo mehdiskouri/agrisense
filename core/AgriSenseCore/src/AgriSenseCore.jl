@@ -72,18 +72,30 @@ include("bridge.jl")
 # Core types
 export ZoneConfig, ModelConfig, FarmProfile
 export HyperGraphLayer, LayeredHyperGraph
+export DEFAULT_HISTORY_SIZE, push_features!, get_history
 
 # Hypergraph engine
 export build_hypergraph, to_gpu, to_cpu
 export cross_layer_query, query_layer, update_vertex_features!
 export add_hyperedge!, remove_hyperedge!, add_vertex!
 export LAYER_FEATURE_DIMS, feature_dim
+export aggregate_by_edge, multi_layer_features
 
 # Bridge API (Python-facing)
 export build_graph, query_farm_status, irrigation_schedule
 export nutrient_report, yield_forecast, detect_anomalies
 export generate_synthetic
 export serialize_graph, deserialize_graph
+export update_features, train_yield_residual
+
+# Model internals (for testing / advanced use)
+export compute_irrigation_schedule, compute_nutrient_report
+export compute_yield_forecast, compute_anomaly_detection
+export compute_stress_coefficients, fit_residual_model, train_yield_residual!
+export RESIDUAL_COEFFICIENTS
+export hargreaves_et0, growth_progress_to_kc
+export DEFAULT_WILTING_POINT, DEFAULT_FIELD_CAPACITY, DEFAULT_VALVE_CAPACITY
+export MIN_HISTORY_FOR_ANOMALY
 
 # GPU utilities
 export get_backend, get_array_type, HAS_CUDA

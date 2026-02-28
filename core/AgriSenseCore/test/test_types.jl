@@ -74,6 +74,8 @@ using SparseArrays
         layer = HyperGraphLayer(
             sparse(Int32[1, 2], Int32[1, 1], Float32[1.0, 1.0], 3, 1),
             zeros(Float32, 3, 4),
+            zeros(Float32, 3, 4, DEFAULT_HISTORY_SIZE),
+            1, 0,
             [Dict{String,Any}()],
             ["v1", "v2", "v3"],
             ["e1"],
@@ -81,5 +83,8 @@ using SparseArrays
         @test layer isa HyperGraphLayer
         @test size(layer.incidence) == (3, 1)
         @test size(layer.vertex_features) == (3, 4)
+        @test size(layer.feature_history) == (3, 4, DEFAULT_HISTORY_SIZE)
+        @test layer.history_head == 1
+        @test layer.history_length == 0
     end
 end
