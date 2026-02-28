@@ -184,4 +184,32 @@ end
             end
         end
     end
+
+    @testset "configurable NPK weights change severity" begin
+        # Heavy N deficit only
+        npk = Float32[20 60 70; 20 60 70; 20 60 70; 20 60 70]
+        req = Float32[80 60 70; 80 60 70; 80 60 70; 80 60 70]
+        graph = make_nutrient_graph(current_npk=npk, required_npk=req)
+
+        # Default weights (0.50, 0.25, 0.25) — N-heavier
+        report_n_heavy = compute_nutrient_report(graph)
+        # Equal weights
+        report_equal   = compute_nutrient_report(graph;
+                              weights=(Float32(1/3), Float32(1/3), Float32(1/3)))
+        # P-heavy weights (should lower severity since P is at target)
+        report_p_heavy = compute_nutrient_report(graph;
+                              weights=(0.10f0, 0.80f0, 0.10f0))
+
+        for i in eachindex(report_n_heavy)
+            zid = report_n_heavy[i]["zone_id"]
+            eq_idx = findfirst(r -> r["zone_id"] == zid, report_equal)
+            ph_idx = findfirst(r -> r["zone_id"] == zid, report_p_heavy)
+            eq_idx === nothing && continue
+            ph_idx === nothing && continue
+            # N-heavy ≥ equal weight severity (N is the deficit nutrient)
+            @test report_n_heavy[i]["severity_score"] >= report_equal[eq_idx]["severity_score"] - 0.01
+            # P-heavy < N-heavy (P has no deficit)
+            @test report_p_heavy[ph_idx]["severity_score"] <= report_n_heavy[i]["severity_score"] + 0.01
+        end
+    end
 end

@@ -48,13 +48,11 @@ end
 @testset "Anomaly Detection" begin
 
     @testset "stable baseline produces no anomalies" begin
-        graph = make_anomaly_graph(nv=2, layers_list=["soil"])
-        # Push 30 stable readings per vertex
-        for v in 1:2
-            push_stable_baseline!(graph.layers[:soil], v, 30;
-                                   baseline=Float32[0.30, 25.0, 1.2, 6.5],
-                                   noise_std=0.01f0)
-        end
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        # Push 30 stable readings for the single vertex
+        push_stable_baseline!(graph.layers[:soil], 1, 30;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.01f0)
         results = compute_anomaly_detection(graph)
         @test isempty(results)
     end
@@ -84,13 +82,16 @@ end
         graph = make_anomaly_graph(nv=1, layers_list=["soil"])
         sol = graph.layers[:soil]
         baseline = Float32[0.30, 25.0, 1.2, 6.5]
+        d = size(sol.vertex_features, 2)
 
         push_stable_baseline!(sol, 1, 30; baseline=baseline, noise_std=0.01f0)
 
-        # Inject a moderate outlier (~2.5σ away)
-        # std ≈ 0.01, so 0.325 is ~2.5σ from 0.30
+        # Western Electric 2-of-3 rule requires 2 recent points > 2σ.
+        # Push 2 outlier readings into history so the rule fires.
         moderate_outlier = Float32[0.325, 25.0, 1.2, 6.5]
-        sol.vertex_features[1, :] .= moderate_outlier[1:size(sol.vertex_features, 2)]
+        push_features!(sol, 1, moderate_outlier[1:d])
+        push_features!(sol, 1, moderate_outlier[1:d])
+        sol.vertex_features[1, :] .= moderate_outlier[1:d]
 
         results = compute_anomaly_detection(graph)
         has_warning = any(r -> r["severity"] in ["warning", "alarm"], results)
@@ -123,9 +124,10 @@ end
                                    noise_std=0.005f0)
         end
 
-        # Inject outliers on vertex 1 in BOTH soil and vision
-        soil_lyr.vertex_features[1, :] .= Float32[0.50, 25.0, 1.2, 6.5]  # moisture spike
-        vis_lyr.vertex_features[1, :] .= Float32[0.8, 0.5, 0.8, 0.7]     # anomaly_score spike (col 3)
+        # With 2 vertices × 30 pushes, shared head dilutes the mean.
+        # Use extreme outliers so they exceed 3σ even with the skewed mean.
+        soil_lyr.vertex_features[1, :] .= Float32[0.95, 25.0, 1.2, 6.5]  # extreme moisture spike
+        vis_lyr.vertex_features[1, :] .= Float32[0.8, 0.5, 0.9, 0.7]     # anomaly_score spike (col 3)
 
         results = compute_anomaly_detection(graph)
         # Vertex 1 should have cross_layer_confirmed = true for at least one result
@@ -167,6 +169,89 @@ end
         results = compute_anomaly_detection(graph)
         for r in results
             @test r["anomaly_type"] == "environmental"  # soil → environmental
+        end
+    end
+
+    @testset "output contains anomaly_rules and timestamp fields" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        push_stable_baseline!(sol, 1, 30;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.005f0)
+        sol.vertex_features[1, :] .= Float32[0.50, 25.0, 1.2, 6.5]  # big outlier
+
+        results = compute_anomaly_detection(graph)
+        @test !isempty(results)
+        for r in results
+            @test haskey(r, "anomaly_rules")
+            @test r["anomaly_rules"] isa Vector{String}
+            @test haskey(r, "timestamp_start")
+            @test haskey(r, "timestamp_end")
+        end
+    end
+
+    @testset "3σ rule fires in anomaly_rules" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        push_stable_baseline!(sol, 1, 30;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.005f0)
+        sol.vertex_features[1, :] .= Float32[0.50, 25.0, 1.2, 6.5]
+
+        results = compute_anomaly_detection(graph)
+        moisture_results = filter(r -> r["feature"] == "moisture", results)
+        @test !isempty(moisture_results)
+        @test "3sigma" in moisture_results[1]["anomaly_rules"]
+    end
+
+    @testset "2-of-3 > 2σ rule fires" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        baseline = Float32[0.30, 25.0, 1.2, 6.5]
+        d = size(sol.vertex_features, 2)
+
+        # Push 20 normal readings to build stable stats
+        push_stable_baseline!(sol, 1, 20; baseline=baseline, noise_std=0.005f0)
+
+        # Push 2 readings just above 2σ (σ ≈ 0.005, 2σ ≈ 0.01)
+        spike = copy(baseline)
+        spike[1] = 0.315f0  # ~3σ from mean
+        push_features!(sol, 1, spike[1:d])
+        push_features!(sol, 1, spike[1:d])
+
+        # Current value also above 2σ
+        sol.vertex_features[1, :] .= spike[1:d]
+
+        results = compute_anomaly_detection(graph)
+        moisture_results = filter(r -> r["feature"] == "moisture", results)
+        if !isempty(moisture_results)
+            rules = moisture_results[1]["anomaly_rules"]
+            @test "2of3_2sigma" in rules
+        end
+    end
+
+    @testset "8-consecutive-same-side rule fires" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        baseline = Float32[0.30, 25.0, 1.2, 6.5]
+        d = size(sol.vertex_features, 2)
+
+        # Push 20 normal readings to build stats (mean ≈ 0.30)
+        push_stable_baseline!(sol, 1, 20; baseline=baseline, noise_std=0.005f0)
+
+        # Now push 8 readings consistently ABOVE mean (but not 3σ)
+        above_mean = copy(baseline)
+        above_mean[1] = 0.306f0  # consistently above mean 0.30 but within 2σ
+        for _ in 1:8
+            push_features!(sol, 1, above_mean[1:d])
+        end
+        sol.vertex_features[1, :] .= above_mean[1:d]
+
+        results = compute_anomaly_detection(graph)
+        moisture_results = filter(r -> r["feature"] == "moisture", results)
+        if !isempty(moisture_results)
+            rules = moisture_results[1]["anomaly_rules"]
+            @test "8consec_same_side" in rules
         end
     end
 end

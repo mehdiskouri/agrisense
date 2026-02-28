@@ -1,20 +1,9 @@
 # ---------------------------------------------------------------------------
 # NPK deficit scoring (GPU-first)
+# Broadcasts are used for element-wise deficit/severity — equivalent to
+# explicit kernels but simpler.  Dead npk_deficit_kernel!/severity_score_kernel!
+# removed per Phase 3 audit.
 # ---------------------------------------------------------------------------
-
-@kernel function npk_deficit_kernel!(deficit, current_npk, required_npk)
-    i = @index(Global)
-    @inbounds begin
-        deficit[i] = max(required_npk[i] - current_npk[i], 0.0f0)
-    end
-end
-
-@kernel function severity_score_kernel!(scores, deficit, growth_weight)
-    i = @index(Global)
-    @inbounds begin
-        scores[i] = deficit[i] * growth_weight[i]
-    end
-end
 
 # ---------------------------------------------------------------------------
 # Urgency thresholds
@@ -37,14 +26,22 @@ function suggest_amendment(n_def::Float32, p_def::Float32, k_def::Float32)::Stri
 end
 
 """
-    compute_nutrient_report(graph::LayeredHyperGraph) -> Vector{Dict}
+    compute_nutrient_report(graph; weights=(0.50f0, 0.25f0, 0.25f0)) -> Vector{Dict}
 
 Score NPK deficits per zone against crop stage requirements. GPU-accelerated.
+
+`weights` is a 3-tuple `(w_N, w_P, w_K)` controlling severity emphasis.
+Default is N-heavier per agronomic convention (nitrogen is the primary
+growth-limiting macronutrient). Weights should sum to 1.
 """
-function compute_nutrient_report(graph::LayeredHyperGraph)::Vector{Dict{String,Any}}
+function compute_nutrient_report(graph::LayeredHyperGraph;
+                                  weights::NTuple{3,Float32}=(0.50f0, 0.25f0, 0.25f0),
+                                  )::Vector{Dict{String,Any}}
     has_npk  = haskey(graph.layers, :npk)
     has_crop = haskey(graph.layers, :crop_requirements)
     (!has_npk || !has_crop) && return Dict{String,Any}[]
+
+    w_n, w_p, w_k = weights
 
     nv = graph.n_vertices
     npk_layer  = graph.layers[:npk]
@@ -75,10 +72,12 @@ function compute_nutrient_report(graph::LayeredHyperGraph)::Vector{Dict{String,A
     sev_p = deficit_p .* growth_weight
     sev_k = deficit_k .* growth_weight
 
-    # Overall severity (GPU broadcast)
+    # Overall severity with configurable per-nutrient weights (GPU broadcast)
+    # N-heavier default: w_n=0.50, w_p=0.25, w_k=0.25 — nitrogen is the primary
+    # growth-limiting macronutrient.
     max_def_cpu = max(maximum(ensure_cpu(req_n)), maximum(ensure_cpu(req_p)),
                       maximum(ensure_cpu(req_k)), 1.0f0)
-    overall_severity = @. (sev_n + sev_p + sev_k) / (3.0f0 * max_def_cpu * 1.5f0)
+    overall_severity = @. (w_n * sev_n + w_p * sev_p + w_k * sev_k) / (max_def_cpu * 1.5f0)
     overall_severity = @. clamp(overall_severity, 0.0f0, 1.0f0)
 
     # Vision confirmation boost — GPU broadcast

@@ -3,6 +3,67 @@
 # (GPU-first)
 # ---------------------------------------------------------------------------
 
+"""
+    compute_derived_features(graph) -> AbstractMatrix{Float32}
+
+Compute yield-specific derived feature columns (on device):
+  1. Cumulative DLI — sum of `:lighting` history col 2 over valid ring-buffer entries
+  2. Soil health score — normalised composite of moisture, pH, conductivity, temp
+
+Returns an nv × k matrix (k = number of available derived features, 0-2).
+"""
+function compute_derived_features(graph::LayeredHyperGraph)::AbstractMatrix{Float32}
+    nv = graph.n_vertices
+    first_layer = first(values(graph.layers))
+    backend = array_backend(first_layer.vertex_features)
+    cols = AbstractMatrix{Float32}[]
+
+    # --- Cumulative DLI (sum of lighting history column 2) ---
+    if haskey(graph.layers, :lighting)
+        ll = graph.layers[:lighting]
+        buf_d = size(ll.feature_history, 2)
+        if buf_d >= 2 && ll.history_length > 0
+            hlength = min(ll.history_length, size(ll.feature_history, 3))
+            # Sum across valid ring-buffer slots for DLI column (col 2)
+            # feature_history is (nv, d, buf_size); slice col 2, valid slots
+            dli_hist = ll.feature_history[:, 2, 1:hlength]   # (nv, hlength)
+            cum_dli = sum(dli_hist; dims=2)                   # (nv, 1)
+            push!(cols, Float32.(cum_dli))
+        end
+    end
+
+    # --- Soil health score (composite 0-1) ---
+    if haskey(graph.layers, :soil)
+        sl = graph.layers[:soil]
+        d_soil = size(sl.vertex_features, 2)
+        if d_soil >= 4
+            moisture     = sl.vertex_features[:, 1]
+            temperature  = sl.vertex_features[:, 2]
+            conductivity = sl.vertex_features[:, 3]
+            ph           = sl.vertex_features[:, 4]
+
+            # Each sub-score normalised via sigmoid-like clamp into [0, 1]:
+            #   moisture:     optimal near 0.3; score = 1 - |m - 0.3| / 0.3
+            #   temperature:  optimal 20-25 °C; piecewise ramp
+            #   pH:           optimal 6.0-7.0;  1 - |pH - 6.5| / 3.5
+            #   conductivity: lower is better; 1 - clamp(c / 4, 0, 1)
+            m_score = @. clamp(1.0f0 - abs(moisture - 0.3f0) / 0.3f0, 0.0f0, 1.0f0)
+            t_score = @. clamp(1.0f0 - abs(temperature - 22.5f0) / 17.5f0, 0.0f0, 1.0f0)
+            p_score = @. clamp(1.0f0 - abs(ph - 6.5f0) / 3.5f0, 0.0f0, 1.0f0)
+            c_score = @. clamp(1.0f0 - conductivity / 4.0f0, 0.0f0, 1.0f0)
+
+            health = @. 0.3f0 * m_score + 0.25f0 * t_score + 0.25f0 * p_score + 0.2f0 * c_score
+            push!(cols, reshape(health, nv, 1))
+        end
+    end
+
+    if isempty(cols)
+        return backend isa CPU ? zeros(Float32, nv, 0) :
+               (HAS_CUDA ? CUDA.zeros(Float32, nv, 0) : zeros(Float32, nv, 0))
+    end
+    return hcat(cols...)
+end
+
 @kernel function fao_yield_kernel!(y_pred, y_potential, ks, kn, kl, kw)
     i = @index(Global)
     @inbounds begin
@@ -144,12 +205,14 @@ function train_yield_residual!(graph::LayeredHyperGraph,
                                 actual_yields::Dict{String,Float32})
     nv = graph.n_vertices
 
-    # Assemble feature matrix (may be on GPU)
+    # Assemble feature matrix (may be on GPU) + derived features
     feature_layers = Symbol[]
     for lsym in [:soil, :lighting, :crop_requirements, :vision]
         haskey(graph.layers, lsym) && push!(feature_layers, lsym)
     end
-    X = multi_layer_features(graph, feature_layers)
+    X_raw = multi_layer_features(graph, feature_layers)
+    X_derived = compute_derived_features(graph)
+    X = size(X_derived, 2) > 0 ? hcat(X_raw, X_derived) : X_raw
 
     # FAO predictions (on device)
     ks, kn, kl, kw = compute_stress_coefficients(graph)
@@ -218,7 +281,9 @@ function compute_yield_forecast(graph::LayeredHyperGraph)::Vector{Dict{String,An
         for lsym in [:soil, :lighting, :crop_requirements, :vision]
             haskey(graph.layers, lsym) && push!(feature_layers, lsym)
         end
-        X = multi_layer_features(graph, feature_layers)
+        X_raw = multi_layer_features(graph, feature_layers)
+        X_derived = compute_derived_features(graph)
+        X = size(X_derived, 2) > 0 ? hcat(X_raw, X_derived) : X_raw
         β = RESIDUAL_COEFFICIENTS[]
         # Pull to CPU for matmul with β (small vector, always CPU)
         X_cpu = ensure_cpu(X)

@@ -437,6 +437,13 @@ end
         # Should detect the moisture spike on v1
         soil_anomalies = filter(r -> r["layer"] == "soil" && r["vertex_id"] == "v1", results)
         @test !isempty(soil_anomalies)
+        # New fields should be present
+        for r in soil_anomalies
+            @test haskey(r, "anomaly_rules")
+            @test r["anomaly_rules"] isa Vector{String}
+            @test haskey(r, "timestamp_start")
+            @test haskey(r, "timestamp_end")
+        end
     end
 
     @testset "no anomaly when insufficient history" begin

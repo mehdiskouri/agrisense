@@ -40,6 +40,7 @@ end
 
 """Default ring buffer depth: 96 slots = 24h at 15-min cadence."""
 const DEFAULT_HISTORY_SIZE = 96
+const CADENCE_MINUTES = 15  # sensor sampling interval in minutes (96 slots = 24h)
 
 """
 A single layer of the hypergraph.

@@ -213,4 +213,41 @@ end
         y_pred = X * β
         @test cor(y_pred, y) > 0.9
     end
+
+    @testset "confidence interval contains FAO target under perfect conditions" begin
+        RESIDUAL_COEFFICIENTS[] = nothing
+        graph = make_yield_graph(
+            soil_moisture=Float32[0.30, 0.30, 0.30, 0.30],
+            temperature=Float32[22.0, 22.0, 22.0, 22.0],
+            dli=Float32[20.0, 20.0, 20.0, 20.0],
+            target_yield=Float32[5.0, 5.0, 5.0, 5.0],
+        )
+        results = compute_yield_forecast(graph)
+        for r in results
+            # The true FAO estimate should lie within [lower, upper]
+            @test r["yield_lower"] <= r["yield_estimate_kg_m2"] <= r["yield_upper"]
+            # CI should bracket the known target (5.0) under perfect conditions
+            @test r["yield_lower"] <= 5.0 + 0.5  # allow slack
+            @test r["yield_upper"] >= 5.0 - 0.5
+        end
+    end
+
+    @testset "derived features matrix has expected columns" begin
+        graph = make_yield_graph()
+        # Push some history so cumulative DLI is nonzero
+        ll = graph.layers[:lighting]
+        for v in 1:graph.n_vertices
+            for _ in 1:10
+                push_features!(ll, v, Float32[100.0, 18.0, 0.5])
+            end
+        end
+        derived = compute_derived_features(graph)
+        # Should have at least 2 columns: cumulative DLI + soil health score
+        @test size(derived, 1) == graph.n_vertices
+        @test size(derived, 2) >= 2
+        # Cumulative DLI should be positive
+        @test all(derived[:, 1] .> 0)
+        # Soil health score should be in [0, 1]
+        @test all(0 .<= derived[:, 2] .<= 1)
+    end
 end

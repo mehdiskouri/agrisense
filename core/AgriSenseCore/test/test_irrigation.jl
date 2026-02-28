@@ -140,6 +140,16 @@ end
         @test et0 < 20.0f0  # reasonable daily ET₀ range
     end
 
+    @testset "Hargreaves ET0 reference value" begin
+        # Hand-computed reference: T=25, Ra=15
+        # t_range = max(0.3 * |25|, 2) = max(7.5, 2) = 7.5
+        # ET₀ = 0.0023 * (25 + 17.8) * √7.5 * 15
+        #      = 0.0023 * 42.8 * 2.7386... * 15
+        #      ≈ 4.046
+        et0 = hargreaves_et0(25.0f0, 15.0f0)
+        @test et0 ≈ 4.046f0 atol=0.05f0
+    end
+
     @testset "growth_progress_to_kc range" begin
         @test growth_progress_to_kc(0.0f0) ≈ 0.3f0
         @test growth_progress_to_kc(1.0f0) ≈ 1.2f0

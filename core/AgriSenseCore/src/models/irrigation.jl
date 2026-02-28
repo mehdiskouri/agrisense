@@ -3,10 +3,13 @@
 # ---------------------------------------------------------------------------
 
 @kernel function water_balance_kernel!(result, moisture, et0, crop_kc, rainfall,
-                                        soil_depth_mm)
+                                        irrigation_applied, soil_depth_mm)
     i = @index(Global)
     @inbounds begin
-        result[i] = moisture[i] - (et0[i] * crop_kc[i]) / soil_depth_mm + rainfall[i] / soil_depth_mm
+        result[i] = moisture[i] +
+                    irrigation_applied[i] -
+                    (et0[i] * crop_kc[i]) / soil_depth_mm +
+                    rainfall[i] / soil_depth_mm
     end
 end
 
@@ -121,6 +124,8 @@ function compute_irrigation_schedule(graph::LayeredHyperGraph,
     # Run water balance over horizon
     recommendations = Dict{String,Any}[]
     projected = copy(soil_moisture)  # stays on device
+    prev_recs = backend isa CPU ? zeros(Float32, nv) :
+                (HAS_CUDA ? CUDA.zeros(Float32, nv) : zeros(Float32, nv))  # day 0: no irrigation
 
     for day in 1:horizon_days
         # Per-day ET₀ — compute on device
@@ -141,10 +146,11 @@ function compute_irrigation_schedule(graph::LayeredHyperGraph,
         end
         day_precip = backend isa CPU ? fill(precip_val, nv) : CUDA.fill(precip_val, nv)
 
-        # Water balance kernel
+        # Water balance kernel (includes previous day's irrigation)
         result = similar(projected)
         launch_kernel!(water_balance_kernel!, backend, nv,
-                       result, projected, day_et0, kc_vec, day_precip, SOIL_DEPTH_MM)
+                       result, projected, day_et0, kc_vec, day_precip,
+                       prev_recs, SOIL_DEPTH_MM)
         projected .= max.(result, 0.0f0)
 
         # Threshold trigger kernel
@@ -209,8 +215,8 @@ function compute_irrigation_schedule(graph::LayeredHyperGraph,
             end
         end
 
-        # Apply irrigation to projected moisture for subsequent days (on device)
-        projected .+= recs
+        # Store recs for next day's kernel and apply to projected for fallback
+        prev_recs = copy(recs)
     end
 
     return recommendations
