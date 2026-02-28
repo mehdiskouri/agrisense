@@ -220,6 +220,10 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
             flags_cpu[v, f] == 0 && continue
             bitflag = flags_cpu[v, f]
 
+            # Rule 3 (4-of-5 > 1σ) alone is intentionally treated as low-signal noise.
+            # Require corroboration from stronger rules to avoid unstable baseline alerts.
+            bitflag == Int32(4) && continue
+
             vid = v <= length(layer.vertex_ids) ? layer.vertex_ids[v] : "v_$v"
             fname = f <= length(fnames) ? fnames[f] : "feature_$f"
 
