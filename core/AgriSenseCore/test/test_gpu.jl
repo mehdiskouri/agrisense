@@ -510,4 +510,45 @@ end
     end
 end
 
+# ============================================================================
+@testset "GPU Synthetic Parity" begin
+
+    @testset "generate_soil_data GPU contract and shape" begin
+        cpu = AgriSenseCore.generate_soil_data(8, 96 * 3; seed=77, use_gpu=false)
+        gpu = AgriSenseCore.generate_soil_data(8, 96 * 3; seed=77, use_gpu=true)
+
+        @test size(gpu["moisture"]) == size(cpu["moisture"])
+        @test size(gpu["missing_mask"]) == size(cpu["missing_mask"])
+        @test gpu["moisture"] isa Matrix{Float32}
+        @test gpu["missing_mask"] isa BitMatrix
+    end
+
+    @testset "GPU weather statistically bounded vs CPU" begin
+        cpu = AgriSenseCore.generate_weather_data(3, 96 * 7; seed=91, use_gpu=false)
+        gpu = AgriSenseCore.generate_weather_data(3, 96 * 7; seed=91, use_gpu=true)
+
+        cpu_temp = cpu["temperature"][.!isnan.(cpu["temperature"])]
+        gpu_temp = gpu["temperature"][.!isnan.(gpu["temperature"])]
+
+        @test !isempty(cpu_temp)
+        @test !isempty(gpu_temp)
+
+        μ_cpu = mean(cpu_temp)
+        μ_gpu = mean(gpu_temp)
+        σ_cpu = std(cpu_temp)
+        σ_gpu = std(gpu_temp)
+
+        @test abs(μ_cpu - μ_gpu) <= 2.0
+        @test abs(σ_cpu - σ_gpu) <= 2.0
+    end
+
+    @testset "GPU generate_synthetic returns CPU-safe arrays" begin
+        result = AgriSenseCore.generate(:greenhouse, 14, 123)
+        soil = result["layers"]["soil"]
+        @test soil["moisture"] isa Matrix{Float32}
+        @test soil["temperature"] isa Matrix{Float32}
+        @test soil["missing_mask"] isa BitMatrix
+    end
+end
+
 end  # if HAS_CUDA
