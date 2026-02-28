@@ -49,6 +49,19 @@ class _FakeModule:
         self.last_call = ("detect_anomalies", (graph_state,), {})
         return [{"anomaly": "ok"}]
 
+    def deserialize_graph(self, graph_state: dict[str, object]) -> dict[str, object]:
+        self.last_call = ("deserialize_graph", (graph_state,), {})
+        return graph_state
+
+    def cross_layer_query(
+        self,
+        graph_state: dict[str, object],
+        layer_a: str,
+        layer_b: str,
+    ) -> dict[str, object]:
+        self.last_call = ("cross_layer_query", (graph_state, layer_a, layer_b), {})
+        return {"layer_a": layer_a, "layer_b": layer_b, "connected": 1}
+
     def update_features(
         self,
         graph_state: dict[str, object],
@@ -161,6 +174,10 @@ def test_wrapper_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
     assert julia_bridge.nutrient_report(graph_state)[0]["nutrient"] == "ok"
     assert julia_bridge.yield_forecast(graph_state)[0]["yield"] == "ok"
     assert julia_bridge.detect_anomalies(graph_state)[0]["anomaly"] == "ok"
+
+    cross = julia_bridge.cross_layer_query(graph_state, "soil", "weather")
+    assert cross["layer_a"] == "soil"
+    assert cross["layer_b"] == "weather"
 
     updated = julia_bridge.update_features(graph_state, "soil", "vertex-1", [0.1, 0.2])
     assert updated["updated"] is True

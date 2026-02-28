@@ -25,11 +25,13 @@ from app.models.enums import (
     FarmTypeEnum,
     HyperEdgeLayerEnum,
     IrrigationTriggerEnum,
+    JobStatusEnum,
     NpkSourceEnum,
     UserRoleEnum,
     VertexTypeEnum,
     ZoneTypeEnum,
 )
+from app.models.jobs import RecomputeJob
 
 # ── Core topology models ────────────────────────────────────────────────────
 from app.models.farm import Farm, HyperEdge, Vertex, Zone
@@ -59,6 +61,7 @@ __all__ = [
     "HyperEdgeLayerEnum",
     "IrrigationEvent",
     "IrrigationTriggerEnum",
+    "JobStatusEnum",
     "LightingReading",
     "NpkSample",
     "NpkSourceEnum",
@@ -70,6 +73,7 @@ __all__ = [
     # Auth
     "User",
     "UserRoleEnum",
+    "RecomputeJob",
     "Vertex",
     "VertexTypeEnum",
     "VisionEvent",

@@ -55,6 +55,8 @@ class FakeRedis:
 	def __init__(self, payloads: list[dict[str, Any]] | None = None) -> None:
 		self.payloads = payloads or []
 		self.publish = AsyncMock()
+		self.setex = AsyncMock()
+		self.get = AsyncMock(return_value=None)
 		self.last_pubsub: FakePubSub | None = None
 
 	def pubsub(self) -> FakePubSub:

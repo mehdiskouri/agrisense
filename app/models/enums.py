@@ -89,3 +89,12 @@ class UserRoleEnum(StrEnum):
     agronomist = "agronomist"
     field_operator = "field_operator"
     readonly = "readonly"
+
+
+class JobStatusEnum(StrEnum):
+    """Background recompute job lifecycle states."""
+
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"

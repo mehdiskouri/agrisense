@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from app.config import get_settings
 from app.database import async_session_factory, engine
 from app.models.farm import Farm
-from app.routes import farms, ingest, ws
+from app.routes import analytics, farms, ingest, jobs, ws
 from app.services.farm_service import FarmService
 from app.services import julia_bridge
 
@@ -129,4 +129,6 @@ async def health_check() -> dict[str, str]:
 # ── Router registration ────────────────────────────────────────────────────
 app.include_router(farms.router, prefix="/api/v1")
 app.include_router(ingest.router, prefix="/api/v1")
+app.include_router(analytics.router, prefix="/api/v1")
+app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(ws.router)

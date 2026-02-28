@@ -158,6 +158,20 @@ def detect_anomalies(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
 		raise JuliaBridgeError(f"detect_anomalies failed: {exc}") from exc
 
 
+def cross_layer_query(
+	graph_state: dict[str, Any],
+	layer_a: str,
+	layer_b: str,
+) -> dict[str, Any]:
+	module = _require_module()
+	try:
+		graph = module.deserialize_graph(_to_plain(graph_state))
+		result = module.cross_layer_query(graph, str(layer_a), str(layer_b))
+		return _from_julia(result)
+	except Exception as exc:
+		raise JuliaBridgeError(f"cross_layer_query failed: {exc}") from exc
+
+
 def update_features(
 	graph_state: dict[str, Any],
 	layer: str,
