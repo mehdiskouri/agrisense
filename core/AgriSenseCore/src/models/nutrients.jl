@@ -1,9 +1,43 @@
 # ---------------------------------------------------------------------------
 # NPK deficit scoring (GPU-first)
-# Broadcasts are used for element-wise deficit/severity — equivalent to
-# explicit kernels but simpler.  Dead npk_deficit_kernel!/severity_score_kernel!
-# removed per Phase 3 audit.
 # ---------------------------------------------------------------------------
+
+@kernel function npk_deficit_severity_kernel!(deficit_n, deficit_p, deficit_k,
+                                              overall_severity,
+                                              current_n, current_p, current_k,
+                                              req_n, req_p, req_k,
+                                              growth_progress,
+                                              w_n::Float32, w_p::Float32, w_k::Float32,
+                                              normaliser::Float32)
+    i = @index(Global)
+    @inbounds begin
+        dn = max(req_n[i] - current_n[i], 0.0f0)
+        dp = max(req_p[i] - current_p[i], 0.0f0)
+        dk = max(req_k[i] - current_k[i], 0.0f0)
+
+        gw = 1.5f0 - 0.5f0 * clamp(growth_progress[i], 0.0f0, 1.0f0)
+
+        deficit_n[i] = dn
+        deficit_p[i] = dp
+        deficit_k[i] = dk
+
+        sev = (w_n * (dn * gw) + w_p * (dp * gw) + w_k * (dk * gw)) / normaliser
+        overall_severity[i] = clamp(sev, 0.0f0, 1.0f0)
+    end
+end
+
+@kernel function vision_boost_kernel!(overall_severity, vision_boosted,
+                                      anomaly_scores, threshold::Float32,
+                                      multiplier::Float32)
+    i = @index(Global)
+    @inbounds begin
+        boosted = anomaly_scores[i] > threshold
+        vision_boosted[i] = boosted
+        if boosted
+            overall_severity[i] = clamp(overall_severity[i] * multiplier, 0.0f0, 1.0f0)
+        end
+    end
+end
 
 # ---------------------------------------------------------------------------
 # Urgency thresholds
@@ -58,27 +92,27 @@ function compute_nutrient_report(graph::LayeredHyperGraph;
     req_p = crop_layer.vertex_features[:, 4]
     req_k = crop_layer.vertex_features[:, 5]
 
-    # Compute deficits via GPU broadcast
-    deficit_n = @. max(req_n - current_n, 0.0f0)
-    deficit_p = @. max(req_p - current_p, 0.0f0)
-    deficit_k = @. max(req_k - current_k, 0.0f0)
-
-    # Growth-stage sensitivity weight
     growth_progress = crop_layer.vertex_features[:, 2]
-    growth_weight = @. Float32(1.5f0 - 0.5f0 * clamp(growth_progress, 0.0f0, 1.0f0))
 
-    # Severity scores per nutrient (GPU broadcast)
-    sev_n = deficit_n .* growth_weight
-    sev_p = deficit_p .* growth_weight
-    sev_k = deficit_k .* growth_weight
+    # Compute deficits + weighted severity via explicit KA kernel
+    deficit_n = backend isa CPU ? zeros(Float32, nv) : CUDA.zeros(Float32, nv)
+    deficit_p = backend isa CPU ? zeros(Float32, nv) : CUDA.zeros(Float32, nv)
+    deficit_k = backend isa CPU ? zeros(Float32, nv) : CUDA.zeros(Float32, nv)
 
-    # Overall severity with configurable per-nutrient weights (GPU broadcast)
-    # N-heavier default: w_n=0.50, w_p=0.25, w_k=0.25 — nitrogen is the primary
+    # N-heavier default: w_n=0.50, w_p=0.25, w_k=0.25 — nitrogen is primary
     # growth-limiting macronutrient.
     max_def_cpu = max(maximum(ensure_cpu(req_n)), maximum(ensure_cpu(req_p)),
                       maximum(ensure_cpu(req_k)), 1.0f0)
-    overall_severity = @. (w_n * sev_n + w_p * sev_p + w_k * sev_k) / (max_def_cpu * 1.5f0)
-    overall_severity = @. clamp(overall_severity, 0.0f0, 1.0f0)
+    normaliser = Float32(max_def_cpu * 1.5f0)
+    overall_severity = backend isa CPU ? zeros(Float32, nv) : CUDA.zeros(Float32, nv)
+
+    launch_kernel!(npk_deficit_severity_kernel!, backend, nv,
+                   deficit_n, deficit_p, deficit_k, overall_severity,
+                   current_n, current_p, current_k,
+                   req_n, req_p, req_k,
+                   growth_progress,
+                   Float32(w_n), Float32(w_p), Float32(w_k),
+                   normaliser)
 
     # Vision confirmation boost — GPU broadcast
     has_vision = haskey(graph.layers, :vision)
@@ -91,11 +125,9 @@ function compute_nutrient_report(graph::LayeredHyperGraph;
         vision_layer = graph.layers[:vision]
         if size(vision_layer.vertex_features, 2) >= 3
             anomaly_scores = vision_layer.vertex_features[:, 3]
-            # GPU-safe broadcast: boost severity where anomaly_score > 0.5
-            vision_mask = anomaly_scores .> 0.5f0
-            boosted = @. clamp(overall_severity * 2.0f0, 0.0f0, 1.0f0)
-            overall_severity = ifelse.(vision_mask, boosted, overall_severity)
-            vision_boosted = vision_mask
+            launch_kernel!(vision_boost_kernel!, backend, nv,
+                           overall_severity, vision_boosted,
+                           anomaly_scores, 0.5f0, 2.0f0)
         end
     end
 

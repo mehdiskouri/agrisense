@@ -250,4 +250,55 @@ end
         # Soil health score should be in [0, 1]
         @test all(0 .<= derived[:, 2] .<= 1)
     end
+
+    @testset "trained residual uses residual-std confidence interval" begin
+        # Build a graph with only crop_requirements so feature count is low (5)
+        nv = 8
+        vertices = [Dict{String,Any}("id" => "v$i", "type" => "crop_bed") for i in 1:nv]
+        edges = [Dict{String,Any}(
+            "id" => "e-crop-1", "layer" => "crop_requirements",
+            "vertex_ids" => ["v$i" for i in 1:nv],
+            "metadata" => Dict{String,Any}(),
+        )]
+
+        config = Dict{String,Any}(
+            "farm_id" => "yield-train-ci",
+            "farm_type" => "greenhouse",
+            "active_layers" => ["crop_requirements"],
+            "zones" => [],
+            "models" => Dict("irrigation" => false, "nutrients" => false,
+                             "yield_forecast" => true, "anomaly_detection" => false),
+            "vertices" => vertices,
+            "edges" => edges,
+        )
+        profile = FarmProfile(config)
+        graph = to_cpu(build_hypergraph(profile, config["vertices"], config["edges"]))
+
+        for v in 1:nv
+            graph.layers[:crop_requirements].vertex_features[v, 1] = 5.0f0   # target yield
+            graph.layers[:crop_requirements].vertex_features[v, 2] = 0.5f0   # growth progress
+            graph.layers[:crop_requirements].vertex_features[v, 3] = 80.0f0  # N target
+            graph.layers[:crop_requirements].vertex_features[v, 4] = 60.0f0  # P target
+            graph.layers[:crop_requirements].vertex_features[v, 5] = 70.0f0  # K target
+        end
+
+        # Deterministic observed outcomes with non-zero residual variance
+        actual = Dict{String,Float32}(
+            "v1" => 5.1f0, "v2" => 4.9f0, "v3" => 5.3f0, "v4" => 4.7f0,
+            "v5" => 5.2f0, "v6" => 4.8f0, "v7" => 5.4f0, "v8" => 4.6f0,
+        )
+
+        train_yield_residual!(graph, actual)
+        @test RESIDUAL_COEFFICIENTS[] !== nothing
+        @test RESIDUAL_STD[] !== nothing
+
+        results = compute_yield_forecast(graph)
+        @test !isempty(results)
+        for r in results
+            @test r["model_layer"] == "fao_plus_residual"
+            @test r["confidence"] ≈ 0.95 atol=1e-6
+            half = (r["yield_upper"] - r["yield_lower"]) / 2.0
+            @test half ≈ Float64(1.96f0 * RESIDUAL_STD[]) atol=1e-3
+        end
+    end
 end

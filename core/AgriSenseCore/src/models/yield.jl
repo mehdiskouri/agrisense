@@ -120,6 +120,7 @@ end
 # Persistent residual model coefficients (module-level state)
 # ---------------------------------------------------------------------------
 const RESIDUAL_COEFFICIENTS = Ref{Union{Nothing, Vector{Float32}}}(nothing)
+const RESIDUAL_STD = Ref{Union{Nothing, Float32}}(nothing)
 
 # ---------------------------------------------------------------------------
 # Stress coefficient computations (GPU-accelerated)
@@ -177,16 +178,29 @@ function compute_stress_coefficients(graph::LayeredHyperGraph)
 end
 
 # ---------------------------------------------------------------------------
-# Ridge regression for residual correction (always CPU — small matrices)
+# Ridge regression for residual correction (GPU when available)
 # ---------------------------------------------------------------------------
 
 """
     fit_residual_model(X, y_residual; λ=1.0f0) -> Vector{Float32}
 
-Ridge regression: β = (X'X + λI) \\ (X'y).  Always runs on CPU.
+Ridge regression: β = (X'X + λI) \\ (X'y).
+Uses GPU solve when `X` is CUDA-backed and CPU solve otherwise.
 """
 function fit_residual_model(X::AbstractMatrix{Float32}, y_residual::AbstractVector{Float32};
                             λ::Float32=1.0f0)::Vector{Float32}
+    backend = array_backend(X)
+    n_features = size(X, 2)
+
+    if !(backend isa CPU) && HAS_CUDA
+        yg = y_residual isa CUDA.AnyCuArray ? y_residual : CuArray(Float32.(y_residual))
+        XtX = X' * X
+        Xty = X' * yg
+        I_gpu = CuArray(Matrix{Float32}(I, n_features, n_features))
+        β_gpu = (XtX + λ * I_gpu) \ Xty
+        return Float32.(ensure_cpu(β_gpu))
+    end
+
     Xc = ensure_cpu(X)
     yc = ensure_cpu(y_residual)
     XtX = Xc' * Xc
@@ -226,9 +240,9 @@ function train_yield_residual!(graph::LayeredHyperGraph,
     end
     y_fao = @. y_pot * ks * kn * kl * kw
 
-    # Pull to CPU for residual building
+    # Pull FAO baseline to CPU for observed residual target construction
     y_fao_cpu = ensure_cpu(y_fao)
-    X_cpu = ensure_cpu(X)
+    n_features = size(X, 2)
 
     obs_indices = Int[]
     y_res = Float32[]
@@ -239,15 +253,26 @@ function train_yield_residual!(graph::LayeredHyperGraph,
         push!(y_res, actual - y_fao_cpu[idx])
     end
 
-    if length(obs_indices) < size(X_cpu, 2) + 1
+    if length(obs_indices) < n_features + 1
         @warn "Not enough observations ($(length(obs_indices))) for ridge regression — " *
-              "need at least $(size(X_cpu, 2) + 1). Coefficients not updated."
+              "need at least $(n_features + 1). Coefficients not updated."
+        RESIDUAL_COEFFICIENTS[] = nothing
+        RESIDUAL_STD[] = nothing
         return nothing
     end
 
-    X_obs = X_cpu[obs_indices, :]
-    β = fit_residual_model(X_obs, Float32.(y_res))
+    X_obs = X[obs_indices, :]
+    y_res_vec = Float32.(y_res)
+    β = fit_residual_model(X_obs, y_res_vec)
+
+    # Residual std used for confidence interval construction
+    X_obs_cpu = ensure_cpu(X_obs)
+    y_hat = X_obs_cpu * β
+    resid = y_res_vec .- y_hat
+    sigma = Float32(std(resid; corrected=true))
+
     RESIDUAL_COEFFICIENTS[] = β
+    RESIDUAL_STD[] = isfinite(sigma) ? max(sigma, 1.0f-4) : 1.0f-4
     return nothing
 end
 
@@ -297,8 +322,12 @@ function compute_yield_forecast(graph::LayeredHyperGraph)::Vector{Dict{String,An
         end
     end
 
-    # Confidence intervals: ±20% for FAO-only, ±10% with residual
-    ci_factor = model_layer == "fao_only" ? 0.20f0 : 0.10f0
+    # Confidence intervals:
+    # - residual model: Gaussian 95% CI using trained residual std
+    # - fao_only: conservative proportional fallback
+    use_residual_ci = model_layer == "fao_plus_residual" && RESIDUAL_STD[] !== nothing
+    z95 = 1.96f0
+    residual_sigma = use_residual_ci ? Float32(RESIDUAL_STD[]) : 0.0f0
 
     # Pull everything to CPU for Dict building
     y_final_cpu = ensure_cpu(y_final)
@@ -319,12 +348,16 @@ function compute_yield_forecast(graph::LayeredHyperGraph)::Vector{Dict{String,An
                  crop_layer.edge_ids[e] : "bed_$e"
 
         est = mean(y_final_cpu[members])
+        half_width = use_residual_ci ? z95 * residual_sigma : 0.20f0 * abs(Float32(est))
+        lower = max(0.0f0, Float32(est) - half_width)
+        upper = Float32(est) + half_width
+        conf = use_residual_ci ? 0.95 : 0.80
         push!(results, Dict{String,Any}(
             "crop_bed_id" => bed_id,
             "yield_estimate_kg_m2" => Float64(est),
-            "yield_lower" => Float64(est * (1.0f0 - ci_factor)),
-            "yield_upper" => Float64(est * (1.0f0 + ci_factor)),
-            "confidence" => Float64(1.0f0 - ci_factor),
+            "yield_lower" => Float64(lower),
+            "yield_upper" => Float64(upper),
+            "confidence" => Float64(conf),
             "stress_factors" => Dict{String,Any}(
                 "Ks" => Float64(mean(ks_cpu[members])),
                 "Kn" => Float64(mean(kn_cpu[members])),

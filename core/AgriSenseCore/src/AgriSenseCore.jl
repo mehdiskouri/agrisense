@@ -92,7 +92,7 @@ export update_features, train_yield_residual
 export compute_irrigation_schedule, compute_nutrient_report
 export compute_yield_forecast, compute_anomaly_detection
 export compute_stress_coefficients, fit_residual_model, train_yield_residual!
-export RESIDUAL_COEFFICIENTS
+export RESIDUAL_COEFFICIENTS, RESIDUAL_STD
 export hargreaves_et0, growth_progress_to_kc
 export DEFAULT_WILTING_POINT, DEFAULT_FIELD_CAPACITY, DEFAULT_VALVE_CAPACITY
 export MIN_HISTORY_FOR_ANOMALY
@@ -109,6 +109,7 @@ export fao_yield_kernel!, nutrient_stress_kernel!, weather_stress_kernel!
 export rolling_stats_kernel!, western_electric_kernel!
 export water_balance_kernel!, threshold_trigger_kernel!, hargreaves_et0_kernel!
 export push_features_kernel!
+export npk_deficit_severity_kernel!, vision_boost_kernel!
 
 # Anomaly helpers
 export anomaly_type_from_layer
