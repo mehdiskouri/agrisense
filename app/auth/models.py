@@ -36,8 +36,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             native_enum=True,
         ),
         nullable=False,
-        default=UserRoleEnum.viewer,
-        server_default="viewer",
+        default=UserRoleEnum.readonly,
+        server_default="readonly",
     )
     is_active: Mapped[bool] = mapped_column(
         default=True,

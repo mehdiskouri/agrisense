@@ -74,7 +74,7 @@ ENUM_ANOMALY_TYPE = postgresql.ENUM(
     create_type=False,
 )
 ENUM_USER_ROLE = postgresql.ENUM(
-    "admin", "manager", "viewer", name="user_role", create_type=False
+    "admin", "agronomist", "field_operator", "readonly", name="user_role", create_type=False
 )
 
 
@@ -553,7 +553,7 @@ def upgrade() -> None:
         sa.Column(
             "role",
             ENUM_USER_ROLE,
-            server_default="viewer",
+            server_default="readonly",
             nullable=False,
         ),
         sa.Column(

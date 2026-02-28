@@ -86,5 +86,6 @@ class UserRoleEnum(StrEnum):
     """User authorization roles for RBAC."""
 
     admin = "admin"
-    manager = "manager"
-    viewer = "viewer"
+    agronomist = "agronomist"
+    field_operator = "field_operator"
+    readonly = "readonly"
