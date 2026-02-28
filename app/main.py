@@ -7,14 +7,32 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.config import get_settings
-from app.database import engine
+from app.database import async_session_factory, engine
+from app.models.farm import Farm
 from app.routes import farms
+from app.services.farm_service import FarmService
 from app.services import julia_bridge
 
 logger = logging.getLogger("agrisense")
+
+
+async def _bootstrap_graph_cache() -> int:
+    """Build and cache graph state for all farms present in the database."""
+    async with async_session_factory() as session:
+        rows = await session.execute(select(Farm.id))
+        farm_ids = list(rows.scalars().all())
+        if not farm_ids:
+            return 0
+
+        service = FarmService(session)
+        count = 0
+        for farm_id in farm_ids:
+            await service.get_graph(farm_id)
+            count += 1
+        return count
 
 
 @asynccontextmanager
@@ -56,6 +74,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             seed=1,
         )
         app.state.julia_ready = True
+
+        if settings.bootstrap_graph_cache_on_startup:
+            bootstrap_count = await _bootstrap_graph_cache()
+            app.state.graph_bootstrap_count = bootstrap_count
+        else:
+            app.state.graph_bootstrap_count = 0
     except Exception as exc:
         logger.exception("startup failure", extra={"error": str(exc)})
         raise

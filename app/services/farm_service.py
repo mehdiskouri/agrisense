@@ -134,6 +134,35 @@ class FarmService:
 		config = await self.build_farm_graph_config(farm_id)
 		return julia_bridge.build_graph(config)
 
+	async def resolve_zone_query_vertex_id(
+		self,
+		farm_id: uuid.UUID,
+		zone_id: uuid.UUID,
+	) -> str:
+		zone = await self._get_zone(zone_id)
+		if zone.farm_id != farm_id:
+			raise ValueError("zone_id does not belong to the target farm")
+
+		stmt = (
+			select(Vertex)
+			.where(Vertex.farm_id == farm_id, Vertex.zone_id == zone_id)
+			.order_by(Vertex.created_at.asc())
+		)
+		rows = await self.db.execute(stmt)
+		vertices = list(rows.scalars().all())
+		if not vertices:
+			raise LookupError("zone_id has no registered vertices for graph status query")
+		return str(vertices[0].id)
+
+	async def query_zone_status(
+		self,
+		farm_id: uuid.UUID,
+		zone_id: uuid.UUID,
+	) -> dict[str, Any]:
+		graph_state = await self.get_graph(farm_id)
+		query_vertex_id = await self.resolve_zone_query_vertex_id(farm_id, zone_id)
+		return julia_bridge.query_farm_status(graph_state, query_vertex_id)
+
 	async def build_farm_graph_config(self, farm_id: uuid.UUID) -> dict[str, Any]:
 		farm = await self.get_farm(farm_id)
 

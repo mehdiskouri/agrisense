@@ -84,11 +84,11 @@ end
         baseline = Float32[0.30, 25.0, 1.2, 6.5]
         d = size(sol.vertex_features, 2)
 
-        push_stable_baseline!(sol, 1, 30; baseline=baseline, noise_std=0.01f0)
+        push_stable_baseline!(sol, 1, 30; baseline=baseline, noise_std=0.005f0)
 
         # Western Electric 2-of-3 rule requires 2 recent points > 2σ.
         # Push 2 outlier readings into history so the rule fires.
-        moderate_outlier = Float32[0.325, 25.0, 1.2, 6.5]
+        moderate_outlier = Float32[0.34, 25.0, 1.2, 6.5]
         push_features!(sol, 1, moderate_outlier[1:d])
         push_features!(sol, 1, moderate_outlier[1:d])
         sol.vertex_features[1, :] .= moderate_outlier[1:d]

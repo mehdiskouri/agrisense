@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     # ── Julia ───────────────────────────────────────────────────────────────
     julia_project: str = "core/AgriSenseCore"
     julia_num_threads: str = "auto"
+    bootstrap_graph_cache_on_startup: bool = True
 
 
 @lru_cache
