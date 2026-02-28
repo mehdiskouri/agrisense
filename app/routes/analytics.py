@@ -59,6 +59,21 @@ async def get_zone_detail(
 		raise _map_error(exc) from exc
 
 
+@router.get("/{farm_id}/vertices/{vertex_id}", response_model=ZoneDetailResponse)
+async def get_vertex_detail(
+	farm_id: uuid.UUID,
+	vertex_id: uuid.UUID,
+	request: Request,
+	db: AsyncSession = Depends(get_db),
+) -> ZoneDetailResponse:
+	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
+	query = ZoneDetailQuery(vertex_id=vertex_id)
+	try:
+		return await service.get_zone_detail(farm_id, query)
+	except Exception as exc:
+		raise _map_error(exc) from exc
+
+
 @router.get("/{farm_id}/irrigation/schedule", response_model=IrrigationScheduleResponse)
 async def get_irrigation_schedule(
 	farm_id: uuid.UUID,

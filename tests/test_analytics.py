@@ -69,6 +69,28 @@ async def test_analytics_zone_detail_endpoint_supports_vertex(client: AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_analytics_vertex_detail_endpoint(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+	farm_id = uuid4()
+	vertex_id = uuid4()
+
+	async def fake_detail(self: AnalyticsService, _farm_id: object, query: ZoneDetailQuery) -> ZoneDetailResponse:
+		assert query.vertex_id == vertex_id
+		return ZoneDetailResponse(
+			farm_id=farm_id,
+			zone_id=None,
+			query_vertex_id=vertex_id,
+			layers={"weather": {"ok": True}},
+			cross_layer=[],
+		)
+
+	monkeypatch.setattr(AnalyticsService, "get_zone_detail", fake_detail)
+
+	response = await client.get(f"/api/v1/analytics/{farm_id}/vertices/{vertex_id}")
+	assert response.status_code == 200
+	assert response.json()["query_vertex_id"] == str(vertex_id)
+
+
+@pytest.mark.asyncio
 async def test_irrigation_schedule_cache_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
 	farm_id = uuid4()
 	fake_db = object()
@@ -129,6 +151,7 @@ async def test_alerts_endpoint_and_openapi_contract(client: AsyncClient, monkeyp
 	paths = openapi.json()["paths"]
 	assert "/api/v1/analytics/{farm_id}/status" in paths
 	assert "/api/v1/analytics/{farm_id}/zones/{zone_id}" in paths
+	assert "/api/v1/analytics/{farm_id}/vertices/{vertex_id}" in paths
 	assert "/api/v1/analytics/{farm_id}/irrigation/schedule" in paths
 	assert "/api/v1/analytics/{farm_id}/nutrients/report" in paths
 	assert "/api/v1/analytics/{farm_id}/yield/forecast" in paths

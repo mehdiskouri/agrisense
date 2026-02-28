@@ -164,9 +164,13 @@ def cross_layer_query(
 	layer_b: str,
 ) -> dict[str, Any]:
 	module = _require_module()
+	if _jl_main is None:
+		raise JuliaBridgeError("cross_layer_query failed: Julia runtime is not initialized")
 	try:
 		graph = module.deserialize_graph(_to_plain(graph_state))
-		result = module.cross_layer_query(graph, str(layer_a), str(layer_b))
+		layer_a_sym = _jl_main.Symbol(str(layer_a))
+		layer_b_sym = _jl_main.Symbol(str(layer_b))
+		result = module.cross_layer_query(graph, layer_a_sym, layer_b_sym)
 		return _from_julia(result)
 	except Exception as exc:
 		raise JuliaBridgeError(f"cross_layer_query failed: {exc}") from exc

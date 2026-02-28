@@ -30,7 +30,7 @@ async def _run_recompute_job(job_id: uuid.UUID, redis_client: object | None) -> 
 			await session.commit()
 		except Exception:
 			try:
-				await session.rollback()
+				await session.commit()
 			except Exception:
 				return
 

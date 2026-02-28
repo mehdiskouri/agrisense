@@ -56,11 +56,11 @@ class _FakeModule:
     def cross_layer_query(
         self,
         graph_state: dict[str, object],
-        layer_a: str,
-        layer_b: str,
+        layer_a: object,
+        layer_b: object,
     ) -> dict[str, object]:
         self.last_call = ("cross_layer_query", (graph_state, layer_a, layer_b), {})
-        return {"layer_a": layer_a, "layer_b": layer_b, "connected": 1}
+        return {"layer_a": str(layer_a), "layer_b": str(layer_b), "connected": 1}
 
     def update_features(
         self,
@@ -160,8 +160,10 @@ def test_initialize_julia_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_wrapper_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeModule()
+    fake_main = SimpleNamespace(Symbol=lambda value: f":{value}")
     monkeypatch.setattr(julia_bridge, "_initialized", True)
     monkeypatch.setattr(julia_bridge, "_agrisense_module", fake)
+    monkeypatch.setattr(julia_bridge, "_jl_main", fake_main)
 
     graph_state = {"farm_id": str(uuid4())}
 
@@ -176,8 +178,8 @@ def test_wrapper_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
     assert julia_bridge.detect_anomalies(graph_state)[0]["anomaly"] == "ok"
 
     cross = julia_bridge.cross_layer_query(graph_state, "soil", "weather")
-    assert cross["layer_a"] == "soil"
-    assert cross["layer_b"] == "weather"
+    assert cross["layer_a"] == ":soil"
+    assert cross["layer_b"] == ":weather"
 
     updated = julia_bridge.update_features(graph_state, "soil", "vertex-1", [0.1, 0.2])
     assert updated["updated"] is True
