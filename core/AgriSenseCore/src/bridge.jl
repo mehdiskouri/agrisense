@@ -84,10 +84,11 @@ end
 function serialize_graph(graph::LayeredHyperGraph)::Dict{String,Any}
     layers_dict = Dict{String,Any}()
     for (name, layer) in graph.layers
+        I, J, V = findnz(layer.incidence)  # single call instead of triple
         layers_dict[string(name)] = Dict{String,Any}(
-            "incidence_rows" => findnz(layer.incidence)[1],
-            "incidence_cols" => findnz(layer.incidence)[2],
-            "incidence_vals" => findnz(layer.incidence)[3],
+            "incidence_rows" => I,
+            "incidence_cols" => J,
+            "incidence_vals" => V,
             "n_vertices" => size(layer.incidence, 1),
             "n_edges" => size(layer.incidence, 2),
             "vertex_features" => Array(layer.vertex_features),
@@ -105,22 +106,31 @@ function serialize_graph(graph::LayeredHyperGraph)::Dict{String,Any}
 end
 
 function deserialize_graph(state::Dict)::LayeredHyperGraph
+    # --- validate top-level keys ---
+    for key in ("farm_id", "n_vertices", "vertex_index", "layers")
+        haskey(state, key) || error("deserialize_graph: missing required key '$key'")
+    end
+
     vertex_index = Dict{String,Int}(string(k) => Int(v) for (k, v) in state["vertex_index"])
     n_vertices = Int(state["n_vertices"])
 
     layers = Dict{Symbol, HyperGraphLayer}()
     for (name, ld) in state["layers"]
-        rows = Int32.(ld["incidence_rows"])
-        cols = Int32.(ld["incidence_cols"])
-        vals = Float32.(ld["incidence_vals"])
-        nv = Int(ld["n_vertices"])
-        ne = Int(ld["n_edges"])
-        B = sparse(rows, cols, vals, nv, ne)
-        vf = Float32.(ld["vertex_features"])
-        em = ld["edge_metadata"]
-        vids = String.(ld["vertex_ids"])
-        eids = String.(ld["edge_ids"])
-        layers[Symbol(name)] = HyperGraphLayer(B, vf, em, vids, eids)
+        try
+            rows = Int32.(ld["incidence_rows"])
+            cols = Int32.(ld["incidence_cols"])
+            vals = Float32.(ld["incidence_vals"])
+            nv = Int(ld["n_vertices"])
+            ne = Int(ld["n_edges"])
+            B = sparse(rows, cols, vals, nv, ne)
+            vf = Float32.(ld["vertex_features"])
+            em = Vector{Dict{String,Any}}(ld["edge_metadata"])
+            vids = String.(ld["vertex_ids"])
+            eids = String.(ld["edge_ids"])
+            layers[Symbol(name)] = HyperGraphLayer(B, vf, em, vids, eids)
+        catch e
+            error("deserialize_graph: failed to reconstruct layer '$name' — $(sprint(showerror, e))")
+        end
     end
 
     LayeredHyperGraph(string(state["farm_id"]), n_vertices, vertex_index, layers)

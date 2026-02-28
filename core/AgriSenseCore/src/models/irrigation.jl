@@ -2,8 +2,6 @@
 # Irrigation scheduler — water balance model (GPU-portable)
 # ---------------------------------------------------------------------------
 
-using KernelAbstractions
-
 @kernel function water_balance_kernel!(result, moisture, et0, crop_kc, rainfall, irrigation)
     i = @index(Global)
     @inbounds begin

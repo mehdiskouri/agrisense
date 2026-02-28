@@ -56,8 +56,17 @@ mutable struct HyperGraphLayer{M<:AbstractSparseMatrix{Float32},
     edge_ids::Vector{String}
 end
 
-# Make HyperGraphLayer GPU-portable via Adapt.jl
-Adapt.@adapt_structure HyperGraphLayer
+# Custom Adapt rule — only move numeric arrays to GPU; strings / dicts stay on CPU.
+# The default @adapt_structure would try to send String vectors to CuArray and crash.
+function Adapt.adapt_structure(to, layer::HyperGraphLayer)
+    HyperGraphLayer(
+        Adapt.adapt(to, layer.incidence),
+        Adapt.adapt(to, layer.vertex_features),
+        layer.edge_metadata,   # keep on CPU
+        layer.vertex_ids,      # keep on CPU
+        layer.edge_ids,        # keep on CPU
+    )
+end
 
 """
 The full layered hypergraph for one farm.

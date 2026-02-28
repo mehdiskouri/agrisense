@@ -2,9 +2,6 @@
 # NPK deficit scoring (GPU-portable)
 # ---------------------------------------------------------------------------
 
-using KernelAbstractions
-using StaticArrays
-
 @kernel function npk_deficit_kernel!(deficit, current_npk, required_npk)
     i = @index(Global)
     @inbounds begin

@@ -61,15 +61,31 @@ include("synthetic/soil.jl")
 include("synthetic/weather.jl")
 include("synthetic/npk.jl")
 include("synthetic/vision.jl")
+include("synthetic/lighting.jl")
 include("synthetic/generator.jl")
 include("bridge.jl")
 
 # ---------------------------------------------------------------------------
 # Public API (exposed to Python via bridge.jl)
 # ---------------------------------------------------------------------------
+
+# Core types
+export ZoneConfig, ModelConfig, FarmProfile
+export HyperGraphLayer, LayeredHyperGraph
+
+# Hypergraph engine
+export build_hypergraph, to_gpu, to_cpu
+export cross_layer_query, query_layer, update_vertex_features!
+export add_hyperedge!, remove_hyperedge!, add_vertex!
+export LAYER_FEATURE_DIMS, feature_dim
+
+# Bridge API (Python-facing)
 export build_graph, query_farm_status, irrigation_schedule
 export nutrient_report, yield_forecast, detect_anomalies
 export generate_synthetic
+export serialize_graph, deserialize_graph
+
+# GPU utilities
 export get_backend, get_array_type, HAS_CUDA
 
 end # module AgriSenseCore
