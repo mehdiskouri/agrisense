@@ -109,3 +109,57 @@ async def test_machine_scope_enforcement_for_api_key_principal() -> None:
     )
     result = await dependency(allowed)
     assert result.scopes == {"jobs"}
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_applies_to_ingest_body_farm_id(
+    fake_redis: object,
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    farm_id = uuid4()
+    app.state.redis = fake_redis
+
+    @dataclass
+    class _SettingsStub:
+        rate_limit_user_per_minute: int = 1
+        rate_limit_api_key_per_minute: int = 1
+        api_key_header_name: str = "x-api-key"
+
+    monkeypatch.setattr("app.middleware.rate_limit.get_settings", lambda: _SettingsStub())
+
+    async def _fake_ingest(self: object, _farm_id: object, _readings: object) -> object:
+        return {
+            "farm_id": str(farm_id),
+            "layer": "soil",
+            "status": "ok",
+            "inserted_count": 1,
+            "failed_count": 0,
+            "event_ids": [1],
+            "warnings": [],
+            "timestamp_start": None,
+            "timestamp_end": None,
+        }
+
+    from app.services.ingest_service import IngestService
+
+    monkeypatch.setattr(IngestService, "ingest_soil", _fake_ingest)
+
+    payload = {
+        "farm_id": str(farm_id),
+        "readings": [
+            {
+                "sensor_id": str(uuid4()),
+                "timestamp": "2026-01-01T00:00:00Z",
+                "moisture": 0.3,
+                "temperature": 23.0,
+            }
+        ],
+    }
+
+    first = await client.post("/api/v1/ingest/soil", json=payload)
+    second = await client.post("/api/v1/ingest/soil", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["detail"]["error"] == "rate_limited"

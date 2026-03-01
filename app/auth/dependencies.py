@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -76,6 +77,36 @@ def extract_request_farm_id(request: Request) -> uuid.UUID | None:
 		return None
 	try:
 		return uuid.UUID(match.group(1))
+	except ValueError:
+		return None
+
+
+async def extract_request_farm_id_async(request: Request) -> uuid.UUID | None:
+	farm_id = extract_request_farm_id(request)
+	if farm_id is not None:
+		return farm_id
+
+	if not request.url.path.startswith("/api/v1/ingest/"):
+		return None
+
+	if request.method.upper() not in {"POST", "PUT", "PATCH"}:
+		return None
+
+	body_bytes = await request.body()
+	if not body_bytes:
+		return None
+	try:
+		payload = json.loads(body_bytes)
+	except json.JSONDecodeError:
+		return None
+	if not isinstance(payload, dict):
+		return None
+
+	token = payload.get("farm_id")
+	if token is None:
+		return None
+	try:
+		return uuid.UUID(str(token))
 	except ValueError:
 		return None
 

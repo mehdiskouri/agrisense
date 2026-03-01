@@ -8,7 +8,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.auth.dependencies import extract_identity_hint, extract_request_farm_id
+from app.auth.dependencies import (
+	extract_identity_hint,
+	extract_request_farm_id_async,
+)
 from app.config import get_settings
 
 
@@ -19,7 +22,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 		if self._is_bypass_path(request.url.path):
 			return await call_next(request)
 
-		farm_id = extract_request_farm_id(request)
+		farm_id = await extract_request_farm_id_async(request)
 		if farm_id is None:
 			return await call_next(request)
 
