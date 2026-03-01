@@ -602,7 +602,17 @@ async def seed_database() -> dict[str, Any]:
 
 
 async def _async_main() -> None:
-	report = await seed_database()
+	try:
+		report = await seed_database()
+	except Exception as exc:
+		print("=== AgriSense Seed Report ===")
+		print("status: failed")
+		print(f"error: {exc}")
+		print("hint: ensure PostgreSQL/Redis are running and DATABASE_URL/REDIS_URL are correct")
+		raise SystemExit(1) from exc
+	finally:
+		await engine.dispose()
+
 	print("=== AgriSense Seed Report ===")
 	print(f"status: {report['status']}")
 	print(f"farm_id: {report['farm_id']}")
@@ -616,10 +626,7 @@ async def _async_main() -> None:
 
 
 def main() -> None:
-	try:
-		asyncio.run(_async_main())
-	finally:
-		asyncio.run(engine.dispose())
+	asyncio.run(_async_main())
 
 
 if __name__ == "__main__":
