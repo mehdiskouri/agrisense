@@ -178,3 +178,44 @@ end
         end
     end
 end
+
+# ===========================================================================
+# Phase 13 — NaN Irrigation Fail-Safe Tests
+# ===========================================================================
+@testset "Phase 13 — NaN Irrigation Guards" begin
+
+    @testset "NaN moisture triggers max irrigation (fail-safe)" begin
+        graph = make_irrigation_graph(
+            soil_moisture=Float32[NaN, NaN, NaN, NaN],
+        )
+        results = compute_irrigation_schedule(graph, Dict{String,Any}(), 1)
+        @test !isempty(results)
+        # NaN moisture → projected moisture NaN → fail-safe max irrigation
+        for r in results
+            @test r["irrigate"] == true
+        end
+    end
+
+    @testset "NaN temperature in Hargreaves yields 0 ET₀" begin
+        et0 = hargreaves_et0(Float32(NaN), 15.0f0)
+        @test et0 ≈ 0.0f0
+    end
+
+    @testset "NaN solar_rad in Hargreaves yields 0 ET₀" begin
+        et0 = hargreaves_et0(25.0f0, Float32(NaN))
+        @test et0 ≈ 0.0f0
+    end
+
+    @testset "mixed NaN/valid inputs: valid zones still irrigated correctly" begin
+        # v1,v2 NaN moisture; v3,v4 normal dry soil
+        graph = make_irrigation_graph(
+            soil_moisture=Float32[NaN, NaN, 0.10, 0.10],
+        )
+        results = compute_irrigation_schedule(graph, Dict{String,Any}(), 1)
+        @test !isempty(results)
+        # All should trigger irrigation (NaN → fail-safe, 0.10 → dry)
+        for r in results
+            @test r["irrigate"] == true
+        end
+    end
+end

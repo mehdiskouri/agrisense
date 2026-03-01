@@ -155,3 +155,58 @@ end
         @test_throws ErrorException deserialize_graph(bad)
     end
 end
+
+# ===========================================================================
+# Phase 13 — Mask Serialization Tests
+# ===========================================================================
+@testset "Phase 13 — Mask Serialization" begin
+
+    @testset "serialize includes mask fields" begin
+        graph = make_bridge_graph()
+        # Push some data including NaN
+        sol = graph.layers[:soil]
+        push_features!(sol, 1, Float32[0.3, 25.0, 1.2, 6.5])
+        push_features!(sol, 1, Float32[NaN, 24.0, NaN, 6.0])
+
+        state = serialize_graph(graph)
+        soil_ld = state["layers"]["soil"]
+        @test haskey(soil_ld, "feature_history_mask")
+        @test haskey(soil_ld, "vertex_features_mask")
+        @test soil_ld["feature_history_mask"] isa Array{Bool, 3}
+        @test soil_ld["vertex_features_mask"] isa Array{Bool, 2}
+    end
+
+    @testset "round-trip preserves masks" begin
+        graph = make_bridge_graph()
+        sol = graph.layers[:soil]
+        push_features!(sol, 1, Float32[0.3, 25.0, 1.2, 6.5])
+        push_features!(sol, 1, Float32[NaN, 24.0, NaN, 6.0])
+
+        state = serialize_graph(graph)
+        restored = deserialize_graph(state)
+
+        orig_fhm = graph.layers[:soil].feature_history_mask
+        rest_fhm = restored.layers[:soil].feature_history_mask
+        @test orig_fhm == rest_fhm
+
+        orig_vfm = graph.layers[:soil].vertex_features_mask
+        rest_vfm = restored.layers[:soil].vertex_features_mask
+        @test orig_vfm == rest_vfm
+    end
+
+    @testset "backward compat: legacy state without masks defaults to all-true" begin
+        graph = make_bridge_graph()
+        state = serialize_graph(graph)
+        # Remove mask fields to simulate legacy data
+        for (_, ld) in state["layers"]
+            delete!(ld, "feature_history_mask")
+            delete!(ld, "vertex_features_mask")
+        end
+        restored = deserialize_graph(state)
+        for (_, lyr) in restored.layers
+            # Legacy data: assume all readings valid → masks filled with true
+            @test all(lyr.feature_history_mask)
+            @test all(lyr.vertex_features_mask)
+        end
+    end
+end

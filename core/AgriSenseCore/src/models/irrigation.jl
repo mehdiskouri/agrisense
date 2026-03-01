@@ -6,10 +6,22 @@
                                         irrigation_applied, soil_depth_mm)
     i = @index(Global)
     @inbounds begin
-        result[i] = moisture[i] +
-                    irrigation_applied[i] -
-                    (et0[i] * crop_kc[i]) / soil_depth_mm +
-                    rainfall[i] / soil_depth_mm
+        m = moisture[i]
+        e = et0[i]
+        kc = crop_kc[i]
+        r = rainfall[i]
+        ia = irrigation_applied[i]
+        # NaN guard: if moisture unknown, propagate NaN so trigger kernel
+        # can apply fail-safe. Replace NaN ET₀/rainfall with 0 (conservative).
+        safe_e  = isnan(e) ? 0.0f0 : e
+        safe_kc = isnan(kc) ? 1.0f0 : kc
+        safe_r  = isnan(r) ? 0.0f0 : r
+        safe_ia = isnan(ia) ? 0.0f0 : ia
+        if isnan(m)
+            result[i] = Float32(NaN)  # let trigger kernel handle
+        else
+            result[i] = m + safe_ia - (safe_e * safe_kc) / soil_depth_mm + safe_r / soil_depth_mm
+        end
     end
 end
 
@@ -17,8 +29,12 @@ end
                                             wilting_point, field_capacity, valve_capacity)
     i = @index(Global)
     @inbounds begin
-        if projected_moisture[i] < wilting_point[i]
-            recommendations[i] = min(field_capacity[i] - projected_moisture[i],
+        pm = projected_moisture[i]
+        if isnan(pm)
+            # Fail-safe: unknown moisture → recommend max irrigation
+            recommendations[i] = valve_capacity[i]
+        elseif pm < wilting_point[i]
+            recommendations[i] = min(field_capacity[i] - pm,
                                      valve_capacity[i])
         else
             recommendations[i] = 0.0f0
@@ -29,8 +45,14 @@ end
 @kernel function hargreaves_et0_kernel!(out, temp, solar_rad)
     i = @index(Global)
     @inbounds begin
-        t_range = max(0.3f0 * abs(temp[i]), 2.0f0)
-        out[i] = 0.0023f0 * (temp[i] + 17.8f0) * sqrt(t_range) * solar_rad[i]
+        t = temp[i]
+        sr = solar_rad[i]
+        if isnan(t) || isnan(sr)
+            out[i] = 0.0f0  # conservative: assume no evapotranspiration when data missing
+        else
+            t_range = max(0.3f0 * abs(t), 2.0f0)
+            out[i] = 0.0023f0 * (t + 17.8f0) * sqrt(t_range) * sr
+        end
     end
 end
 
@@ -44,6 +66,8 @@ end
 Simplified Hargreaves equation (FAO Paper 56).
 """
 function hargreaves_et0(temp::Float32, solar_rad::Float32)::Float32
+    # NaN guard: unknown temp or solar_rad → 0 ET₀ (Phase 13)
+    (isnan(temp) || isnan(solar_rad)) && return 0.0f0
     t_range = max(0.3f0 * abs(temp), 2.0f0)
     return 0.0023f0 * (temp + 17.8f0) * sqrt(t_range) * solar_rad
 end

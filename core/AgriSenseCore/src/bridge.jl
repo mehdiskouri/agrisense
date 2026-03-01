@@ -165,6 +165,8 @@ function serialize_graph(graph::LayeredHyperGraph)::Dict{String,Any}
             "edge_metadata" => layer.edge_metadata,
             "vertex_ids" => layer.vertex_ids,
             "edge_ids" => layer.edge_ids,
+            "feature_history_mask" => Array(ensure_cpu(layer.feature_history_mask)),
+            "vertex_features_mask" => Array(ensure_cpu(layer.vertex_features_mask)),
         )
     end
     return Dict{String,Any}(
@@ -207,6 +209,19 @@ function deserialize_graph(state::Dict)::LayeredHyperGraph
             vids = String.(ld["vertex_ids"])
             eids = String.(ld["edge_ids"])
             layers[Symbol(name)] = HyperGraphLayer(B, vf, fh, hhead, hlen, em, vids, eids)
+            # Restore masks (backward compat: default to all-true for existing data)
+            lyr = layers[Symbol(name)]
+            if haskey(ld, "feature_history_mask")
+                lyr.feature_history_mask = Bool.(ld["feature_history_mask"])
+            else
+                # Legacy graph without masks — assume all written data is valid
+                fill!(lyr.feature_history_mask, true)
+            end
+            if haskey(ld, "vertex_features_mask")
+                lyr.vertex_features_mask = Bool.(ld["vertex_features_mask"])
+            else
+                fill!(lyr.vertex_features_mask, true)
+            end
         catch e
             error("deserialize_graph: failed to reconstruct layer '$name' — $(sprint(showerror, e))")
         end

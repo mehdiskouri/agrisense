@@ -543,3 +543,123 @@ end
         end
     end
 end
+
+# ===========================================================================
+# Phase 13 — NaN-Aware Anomaly Detection Tests
+# ===========================================================================
+@testset "Phase 13 — NaN-Immune rolling_stats" begin
+
+    @testset "rolling_stats skips NaN and computes correct mean/std" begin
+        # Create a graph, push 10 valid readings then 5 NaN readings
+        Random.seed!(13001)
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"], buf_size=20)
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+
+        baseline = Float32[0.30, 25.0, 1.2, 6.5]
+        for _ in 1:10
+            push_features!(sol, 1, baseline[1:d])
+        end
+        # Inject 5 NaN readings — should NOT corrupt stats
+        for _ in 1:5
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        @test sol.history_length == 15
+
+        # Set current to a massive outlier
+        sol.vertex_features[1, :] .= Float32[0.90, 25.0, 1.2, 6.5]
+
+        # Stats should be computed from the 10 valid readings, ignoring 5 NaN
+        # Mean moisture ≈ 0.30, std ≈ 0.0
+        # Current = 0.90, deviation ≈ 0.60, which is >> 3σ → alarm must fire
+        results = compute_anomaly_detection(graph)
+        moisture_results = filter(r -> r["feature"] == "moisture" &&
+                                       r["anomaly_type"] != "sensor_outage", results)
+        @test !isempty(moisture_results)
+        alarms = filter(r -> r["severity"] == "alarm", moisture_results)
+        @test !isempty(alarms)
+        @test "3sigma" in alarms[1]["anomaly_rules"]
+    end
+
+    @testset "all-NaN history produces no false positives" begin
+        Random.seed!(13002)
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"], buf_size=20)
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+
+        # Push 15 NaN readings
+        for _ in 1:15
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        # Current is also NaN → should not fire WE rules (mean & std → 0)
+        sol.vertex_features[1, :] .= Float32(NaN)
+
+        results = compute_anomaly_detection(graph)
+        # Should only have sensor_outage, no WE statistical anomaly
+        we_results = filter(r -> r["anomaly_type"] != "sensor_outage", results)
+        @test isempty(we_results)
+    end
+
+    @testset "NaN-heavy history: silent false negative regression" begin
+        # This test verifies the critical bug fix: NaN in history should NOT
+        # prevent real anomaly detection (previously NaN → NaN mean → flag=0)
+        Random.seed!(13003)
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"], buf_size=30)
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+
+        baseline = Float32[0.30, 25.0, 1.2, 6.5]
+        # Push 8 valid readings (minimum for anomaly detection)
+        for _ in 1:8
+            push_features!(sol, 1, baseline[1:d])
+        end
+        # Interleave 10 NaN readings throughout
+        for _ in 1:10
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        @test sol.history_length == 18
+
+        # Set current to extreme outlier
+        sol.vertex_features[1, :] .= Float32[0.95, 25.0, 1.2, 6.5]
+
+        results = compute_anomaly_detection(graph)
+        moisture_results = filter(r -> r["feature"] == "moisture" &&
+                                       r["anomaly_type"] != "sensor_outage", results)
+        # The critical test: NaN should NOT silence the alarm
+        @test !isempty(moisture_results)
+        @test any(r -> r["severity"] == "alarm", moisture_results)
+    end
+end
+
+@testset "Phase 13 — Western Electric NaN Guards" begin
+
+    @testset "WE Rule 2: NaN in lookback doesn't count as 2σ breach" begin
+        Random.seed!(13004)
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"], buf_size=20)
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+        baseline = Float32[0.30, 25.0, 1.2, 6.5]
+
+        # Push 15 stable readings
+        push_stable_baseline!(sol, 1, 15; baseline=baseline, noise_std=0.005f0)
+
+        # Push 2 NaN then 1 moderate outlier (just above 2σ)
+        push_features!(sol, 1, fill(Float32(NaN), d))
+        push_features!(sol, 1, fill(Float32(NaN), d))
+
+        # Current at ~3σ for moisture: 0.30 + 0.015 ≈ 0.315
+        # With σ ≈ 0.005, 2σ ≈ 0.01 → 0.315 is about 3σ
+        sol.vertex_features[1, :] .= Float32[0.315, 25.0, 1.2, 6.5]
+
+        results = compute_anomaly_detection(graph)
+        moisture_results = filter(r -> r["feature"] == "moisture" &&
+                                       r["anomaly_type"] != "sensor_outage", results)
+        # NaN in lookback should NOT count as 2σ breaches for Rule 2,
+        # so "2of3_2sigma" should NOT fire (only 1 of 3 is >2σ: the current)
+        if !isempty(moisture_results)
+            rules = moisture_results[1]["anomaly_rules"]
+            # Rule 2 should NOT fire — NaN doesn't count as a breach
+            @test !("2of3_2sigma" in rules)
+        end
+    end
+end

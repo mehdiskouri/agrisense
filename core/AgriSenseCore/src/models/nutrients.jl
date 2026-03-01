@@ -11,11 +11,18 @@
                                               normaliser::Float32)
     i = @index(Global)
     @inbounds begin
-        dn = max(req_n[i] - current_n[i], 0.0f0)
-        dp = max(req_p[i] - current_p[i], 0.0f0)
-        dk = max(req_k[i] - current_k[i], 0.0f0)
+        # NaN guard: if current reading is NaN, assume worst-case (zero nutrient available)
+        cn = current_n[i]; cn = isnan(cn) ? 0.0f0 : cn
+        cp = current_p[i]; cp = isnan(cp) ? 0.0f0 : cp
+        ck = current_k[i]; ck = isnan(ck) ? 0.0f0 : ck
 
-        gw = 1.5f0 - 0.5f0 * clamp(growth_progress[i], 0.0f0, 1.0f0)
+        dn = max(req_n[i] - cn, 0.0f0)
+        dp = max(req_p[i] - cp, 0.0f0)
+        dk = max(req_k[i] - ck, 0.0f0)
+
+        gp = growth_progress[i]
+        gp = isnan(gp) ? 0.5f0 : gp  # default mid-growth if unknown
+        gw = 1.5f0 - 0.5f0 * clamp(gp, 0.0f0, 1.0f0)
 
         deficit_n[i] = dn
         deficit_p[i] = dp

@@ -71,21 +71,55 @@ mutable struct HyperGraphLayer{M<:AbstractSparseMatrix{Float32},
     edge_metadata::Vector{Dict{String,Any}}
     vertex_ids::Vector{String}
     edge_ids::Vector{String}
+    # --- Validity masks (Phase 13) ---
+    # true = valid reading written, false = no data / NaN.
+    # Use Array{Bool} (not BitArray) so CuArray{Bool} GPU transfer works.
+    feature_history_mask::AbstractArray{Bool, 3}   # (n_vertices, d, buffer_size)
+    vertex_features_mask::AbstractArray{Bool, 2}   # (n_vertices, d)
+end
+
+# Convenience constructor — backward compat: masks default to all-false (empty buffer)
+# Creates masks on the same backend (GPU/CPU) as vertex_features.
+function HyperGraphLayer(incidence::M, vertex_features::F, feature_history::H,
+                         history_head::Int, history_length::Int,
+                         edge_metadata::Vector{Dict{String,Any}},
+                         vertex_ids::Vector{String},
+                         edge_ids::Vector{String}) where {M<:AbstractSparseMatrix{Float32},
+                                                           F<:AbstractMatrix{Float32},
+                                                           H<:AbstractArray{Float32, 3}}
+    nv, d = size(vertex_features)
+    buf_size = size(feature_history, 3)
+    backend = array_backend(vertex_features)
+    if !(backend isa CPU) && HAS_CUDA
+        fh_mask = CUDA.zeros(Bool, nv, d, buf_size)
+        vf_mask = CUDA.zeros(Bool, nv, d)
+    else
+        fh_mask = Array{Bool,3}(undef, nv, d, buf_size)
+        fill!(fh_mask, false)
+        vf_mask = Array{Bool,2}(undef, nv, d)
+        fill!(vf_mask, false)
+    end
+    return HyperGraphLayer{M,F,H}(incidence, vertex_features, feature_history,
+                                   history_head, history_length,
+                                   edge_metadata, vertex_ids, edge_ids,
+                                   fh_mask, vf_mask)
 end
 
 # Custom Adapt rule — only move numeric arrays to GPU; strings / dicts stay on CPU.
 # The default @adapt_structure would try to send String vectors to CuArray and crash.
 function Adapt.adapt_structure(to, layer::HyperGraphLayer)
-    HyperGraphLayer(
-        Adapt.adapt(to, layer.incidence),
-        Adapt.adapt(to, layer.vertex_features),
-        Adapt.adapt(to, layer.feature_history),  # numeric 3D → safe for GPU
-        layer.history_head,
-        layer.history_length,
-        layer.edge_metadata,   # keep on CPU
-        layer.vertex_ids,      # keep on CPU
-        layer.edge_ids,        # keep on CPU
-    )
+    adapted_inc = Adapt.adapt(to, layer.incidence)
+    adapted_vf  = Adapt.adapt(to, layer.vertex_features)
+    adapted_fh  = Adapt.adapt(to, layer.feature_history)
+    adapted_fhm = Adapt.adapt(to, layer.feature_history_mask)
+    adapted_vfm = Adapt.adapt(to, layer.vertex_features_mask)
+    # Use the 8-arg constructor (which allocates dummy masks), then overwrite masks
+    lyr = HyperGraphLayer(adapted_inc, adapted_vf, adapted_fh,
+                           layer.history_head, layer.history_length,
+                           layer.edge_metadata, layer.vertex_ids, layer.edge_ids)
+    lyr.feature_history_mask = adapted_fhm
+    lyr.vertex_features_mask = adapted_vfm
+    return lyr
 end
 
 # ---------------------------------------------------------------------------
@@ -126,13 +160,17 @@ ensure_cpu(arr::AbstractSparseMatrix) = SparseMatrixCSC{Float32,Int32}(sparse(Ar
 # GPU-safe push_features! kernel
 # ---------------------------------------------------------------------------
 
-@kernel function push_features_kernel!(vf, fh, @Const(features_gpu),
+@kernel function push_features_kernel!(vf, fh, fh_mask, vf_mask, @Const(features_gpu),
                                         vertex_idx::Int32, head::Int32, n_feat::Int32)
     f = @index(Global)
     @inbounds begin
         if f <= n_feat
-            vf[vertex_idx, f] = features_gpu[f]
-            fh[vertex_idx, f, head] = features_gpu[f]
+            val = features_gpu[f]
+            vf[vertex_idx, f] = val
+            fh[vertex_idx, f, head] = val
+            valid = !isnan(val)
+            fh_mask[vertex_idx, f, head] = valid
+            vf_mask[vertex_idx, f] = valid
         end
     end
 end
@@ -156,13 +194,20 @@ function push_features!(layer::HyperGraphLayer, vertex_idx::Int,
     backend = array_backend(layer.vertex_features)
     if backend isa CPU
         # CPU path — direct scalar indexing
-        layer.vertex_features[vertex_idx, 1:n_feat] .= @view features[1:n_feat]
-        layer.feature_history[vertex_idx, 1:n_feat, layer.history_head] .= @view features[1:n_feat]
+        feat_view = @view features[1:n_feat]
+        layer.vertex_features[vertex_idx, 1:n_feat] .= feat_view
+        layer.feature_history[vertex_idx, 1:n_feat, layer.history_head] .= feat_view
+        # Update validity masks — true where value is not NaN
+        valid_mask = .!isnan.(feat_view)
+        layer.feature_history_mask[vertex_idx, 1:n_feat, layer.history_head] .= valid_mask
+        layer.vertex_features_mask[vertex_idx, 1:n_feat] .= valid_mask
     else
         # GPU path — upload features once, launch kernel
         features_gpu = CuArray(features[1:n_feat])
         launch_kernel!(push_features_kernel!, backend, n_feat,
-                       layer.vertex_features, layer.feature_history, features_gpu,
+                       layer.vertex_features, layer.feature_history,
+                       layer.feature_history_mask, layer.vertex_features_mask,
+                       features_gpu,
                        Int32(vertex_idx), Int32(layer.history_head), Int32(n_feat))
     end
 
@@ -173,36 +218,53 @@ function push_features!(layer::HyperGraphLayer, vertex_idx::Int,
 end
 
 """
-    get_history(layer, vertex_idx) -> Matrix{Float32}
+    get_history(layer, vertex_idx; return_mask=false)
 
 Return `(d, valid_length)` matrix of historical readings for a vertex,
 ordered oldest-first.  Returns a `(d, 0)` matrix if buffer is empty.
-Always returns a CPU `Matrix{Float32}`.
+Always returns CPU arrays.
+
+When `return_mask=true`, returns `(data::Matrix{Float32}, mask::Matrix{Bool})`
+where `mask[f, t]` is `true` iff the slot held a valid (non-NaN) reading.
 """
-function get_history(layer::HyperGraphLayer, vertex_idx::Int)::Matrix{Float32}
+function get_history(layer::HyperGraphLayer, vertex_idx::Int; return_mask::Bool=false)
     d = size(layer.vertex_features, 2)
     buf_size = size(layer.feature_history, 3)
     len = layer.history_length
 
     if len == 0
-        return zeros(Float32, d, 0)
+        data = zeros(Float32, d, 0)
+        return return_mask ? (data, Matrix{Bool}(undef, d, 0)) : data
     end
 
     # Pull the vertex's full history slice to CPU if needed
     hist_slice = ensure_cpu(layer.feature_history[vertex_idx:vertex_idx, :, :])  # (1, d, buf_size)
+    mask_slice = if return_mask
+        ensure_cpu(layer.feature_history_mask[vertex_idx:vertex_idx, :, :])
+    else
+        nothing
+    end
 
     result = Matrix{Float32}(undef, d, len)
+    mask_result = return_mask ? Matrix{Bool}(undef, d, len) : nothing
+
     if len < buf_size
         for t in 1:len
             result[:, t] .= @view hist_slice[1, :, t]
+            if return_mask
+                mask_result[:, t] .= @view mask_slice[1, :, t]
+            end
         end
     else
         for t in 1:len
             src_idx = mod1(layer.history_head + t - 1, buf_size)
             result[:, t] .= @view hist_slice[1, :, src_idx]
+            if return_mask
+                mask_result[:, t] .= @view mask_slice[1, :, src_idx]
+            end
         end
     end
-    return result
+    return return_mask ? (result, mask_result) : result
 end
 
 """

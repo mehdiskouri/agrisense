@@ -14,23 +14,36 @@
             means[v, f] = 0.0f0
             stds[v, f]  = 0.0f0
         else
-            # Compute mean
+            # Compute mean — skip NaN values (Phase 13)
             s = 0.0f0
+            n_valid = Int32(0)
             for t in 1:valid_len
                 idx = t <= buf_size ? t : mod1(t, buf_size)
-                s += history[v, f, idx]
+                val = history[v, f, idx]
+                if !isnan(val)
+                    s += val
+                    n_valid += Int32(1)
+                end
             end
-            m = s / Float32(valid_len)
-            means[v, f] = m
+            if n_valid == Int32(0)
+                means[v, f] = 0.0f0
+                stds[v, f]  = 0.0f0
+            else
+                m = s / Float32(n_valid)
+                means[v, f] = m
 
-            # Compute std
-            ss = 0.0f0
-            for t in 1:valid_len
-                idx = t <= buf_size ? t : mod1(t, buf_size)
-                diff = history[v, f, idx] - m
-                ss += diff * diff
+                # Compute std — skip NaN values
+                ss = 0.0f0
+                for t in 1:valid_len
+                    idx = t <= buf_size ? t : mod1(t, buf_size)
+                    val = history[v, f, idx]
+                    if !isnan(val)
+                        diff = val - m
+                        ss += diff * diff
+                    end
+                end
+                stds[v, f] = sqrt(ss / Float32(n_valid))
             end
-            stds[v, f] = sqrt(ss / Float32(valid_len))
         end
     end
 end
@@ -50,8 +63,9 @@ end
 
         flag = Int32(0)  # bitfield: bit0=3σ, bit1=2of3>2σ, bit2=4of5>1σ, bit3=8consec
 
-        if s >= 1.0f-8
-            cur = current[v, f]
+        cur = current[v, f]
+        # Skip if current value is NaN or std is degenerate
+        if s >= 1.0f-8 && !isnan(cur) && !isnan(m)
             deviation = abs(cur - m)
 
             # --- Rule 1: single point > 3σ ---
@@ -61,13 +75,13 @@ end
 
             # Ring buffer: head points to NEXT write slot, so most recent is head-1
 
-            # --- Rule 2: 2 of last 3 > 2σ ---
+            # --- Rule 2: 2 of last 3 > 2σ (skip NaN history values) ---
             if valid_len >= 2
                 count_2sigma = Int32(deviation > sigma2 * s ? 1 : 0)
                 for k in 1:min(Int32(2), valid_len)
                     idx = mod1(head - k, buf_size)
                     hval = history[v, f, idx]
-                    if abs(hval - m) > sigma2 * s
+                    if !isnan(hval) && abs(hval - m) > sigma2 * s
                         count_2sigma += Int32(1)
                     end
                 end
@@ -76,13 +90,13 @@ end
                 end
             end
 
-            # --- Rule 3: 4 of last 5 > 1σ ---
+            # --- Rule 3: 4 of last 5 > 1σ (skip NaN history values) ---
             if valid_len >= 4
                 count_1sigma = Int32(deviation > sigma1 * s ? 1 : 0)
                 for k in 1:min(Int32(4), valid_len)
                     idx = mod1(head - k, buf_size)
                     hval = history[v, f, idx]
-                    if abs(hval - m) > sigma1 * s
+                    if !isnan(hval) && abs(hval - m) > sigma1 * s
                         count_1sigma += Int32(1)
                     end
                 end
@@ -91,13 +105,17 @@ end
                 end
             end
 
-            # --- Rule 4: 8 consecutive same side of mean ---
+            # --- Rule 4: 8 consecutive same side of mean (NaN breaks the run) ---
             if valid_len >= 7
                 cur_side = Int32(cur > m ? 1 : -1)
                 all_same = true
                 for k in 1:min(Int32(7), valid_len)
                     idx = mod1(head - k, buf_size)
                     hval = history[v, f, idx]
+                    if isnan(hval)
+                        all_same = false
+                        break
+                    end
                     hside = Int32(hval > m ? 1 : -1)
                     if hside != cur_side
                         all_same = false
@@ -108,7 +126,7 @@ end
                     flag = flag | Int32(8)  # bit 3
                 end
             end
-        end  # s >= 1.0f-8
+        end  # s >= 1.0f-8 && !isnan(cur)
 
         flags[v, f] = flag
     end

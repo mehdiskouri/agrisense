@@ -704,4 +704,126 @@ end
     end
 end
 
+# ============================================================================
+# Phase 13 — GPU Mask Infrastructure Tests
+# ============================================================================
+@testset "GPU Phase 13 — Mask Transfer & Write" begin
+
+    @testset "GPU mask arrays transfer correctly" begin
+        graph = make_gpu_test_graph()
+        for (_, layer) in graph.layers
+            @test layer.feature_history_mask isa CuArray{Bool, 3}
+            @test layer.vertex_features_mask isa CuArray{Bool, 2}
+            @test size(layer.feature_history_mask) == size(layer.feature_history)
+            @test size(layer.vertex_features_mask) == size(layer.vertex_features)
+        end
+    end
+
+    @testset "GPU → CPU → GPU round-trip preserves masks" begin
+        graph = make_gpu_test_graph()
+        layer = graph.layers[:soil]
+        push_features!(layer, 1, Float32[0.3, 25.0, 1.2, 6.5])
+        push_features!(layer, 1, Float32[NaN, 24.0, NaN, 6.0])
+
+        cpu_graph = to_cpu(graph)
+        gpu_graph2 = to_gpu(cpu_graph)
+
+        cpu_fhm = ensure_cpu(cpu_graph.layers[:soil].feature_history_mask)
+        gpu_fhm = ensure_cpu(gpu_graph2.layers[:soil].feature_history_mask)
+        @test cpu_fhm == gpu_fhm
+
+        cpu_vfm = ensure_cpu(cpu_graph.layers[:soil].vertex_features_mask)
+        gpu_vfm = ensure_cpu(gpu_graph2.layers[:soil].vertex_features_mask)
+        @test cpu_vfm == gpu_vfm
+    end
+
+    @testset "GPU push_features! writes correct mask for valid/NaN" begin
+        graph = make_gpu_test_graph()
+        layer = graph.layers[:soil]
+
+        # Push valid data
+        push_features!(layer, 1, Float32[0.5, 22.0, 1.0, 6.5])
+        vfm = ensure_cpu(layer.vertex_features_mask)
+        @test all(vfm[1, :])  # all valid
+
+        # Push NaN data
+        push_features!(layer, 2, Float32[NaN, 22.0, NaN, 6.5])
+        vfm2 = ensure_cpu(layer.vertex_features_mask)
+        @test vfm2[2, 1] == false
+        @test vfm2[2, 2] == true
+        @test vfm2[2, 3] == false
+        @test vfm2[2, 4] == true
+    end
+
+    @testset "GPU get_history return_mask works" begin
+        graph = make_gpu_test_graph()
+        layer = graph.layers[:soil]
+        push_features!(layer, 1, Float32[1.0, 2.0, 3.0, 4.0])
+        push_features!(layer, 1, Float32[NaN, 2.0, NaN, 4.0])
+
+        data, mask = get_history(layer, 1; return_mask=true)
+        @test data isa Matrix{Float32}
+        @test mask isa Matrix{Bool}
+        @test size(data) == size(mask)
+        @test mask[1, 1] == true   # first push, feature 1 valid
+        @test mask[1, 2] == false  # second push, feature 1 NaN
+    end
+end
+
+@testset "GPU Phase 13 — NaN-Aware Model Parity" begin
+
+    @testset "GPU anomaly detection ignores NaN in stats" begin
+        graph = make_gpu_test_graph()
+        nv = graph.n_vertices
+        layer = graph.layers[:soil]
+        d = size(ensure_cpu(layer.vertex_features), 2)
+
+        # Push 10 valid readings
+        for t in 1:10
+            for v in 1:nv
+                push_features!(layer, v, Float32[0.25 + 0.001*t, 22.0, 1.0, 6.5])
+            end
+        end
+        # Push 5 NaN readings
+        for _ in 1:5
+            for v in 1:nv
+                push_features!(layer, v, fill(Float32(NaN), d))
+            end
+        end
+        # Inject outlier on v1
+        push_features!(layer, 1, Float32[0.99, 22.0, 1.0, 6.5])
+
+        results = compute_anomaly_detection(graph)
+        # Despite NaN history, outlier on v1 should still be detected
+        soil_v1 = filter(r -> r["layer"] == "soil" && r["vertex_id"] == "v1" &&
+                              r["anomaly_type"] != "sensor_outage", results)
+        @test !isempty(soil_v1)
+    end
+
+    @testset "GPU weather stress NaN → Kw=1.0" begin
+        graph = make_gpu_test_graph()
+        nv = graph.n_vertices
+        for v in 1:nv
+            graph.layers[:weather].vertex_features[v, 1] = Float32(NaN)
+        end
+        _, _, _, kw = compute_stress_coefficients(graph)
+        kw_cpu = ensure_cpu(kw)
+        @test all(kw_cpu .≈ 1.0f0)
+    end
+
+    @testset "GPU nutrient stress NaN → worst-case Kn" begin
+        graph = make_gpu_test_graph()
+        nv = graph.n_vertices
+        for v in 1:nv
+            graph.layers[:npk].vertex_features[v, 1] = Float32(NaN)
+            graph.layers[:npk].vertex_features[v, 2] = Float32(NaN)
+            graph.layers[:npk].vertex_features[v, 3] = Float32(NaN)
+        end
+        _, kn, _, _ = compute_stress_coefficients(graph)
+        kn_cpu = ensure_cpu(kn)
+        @test !any(isnan.(kn_cpu))
+        @test all(kn_cpu .< 0.5f0)  # NaN → 0 → max deficit → low Kn
+    end
+end
+
 end  # if HAS_CUDA

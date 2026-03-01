@@ -118,3 +118,80 @@ using SparseArrays
         @test hist1 ≈ hist2
     end
 end
+
+# ===========================================================================
+# Phase 13 — get_history return_mask Tests
+# ===========================================================================
+@testset "Phase 13 — get_history with return_mask" begin
+
+    # Helper (same as above)
+    function make_layer_p13(nv::Int, d::Int; buf_size::Int=DEFAULT_HISTORY_SIZE)
+        B = sparse(Int32[1], Int32[1], Float32[1.0], nv, 1)
+        vf = zeros(Float32, nv, d)
+        fh = zeros(Float32, nv, d, buf_size)
+        return HyperGraphLayer(B, vf, fh, 1, 0,
+                               [Dict{String,Any}()],
+                               ["v$i" for i in 1:nv],
+                               ["e1"])
+    end
+
+    @testset "return_mask=false gives Matrix only" begin
+        layer = make_layer_p13(1, 2; buf_size=5)
+        push_features!(layer, 1, Float32[1.0, 2.0])
+        result = get_history(layer, 1; return_mask=false)
+        @test result isa Matrix{Float32}
+    end
+
+    @testset "return_mask=true gives (Matrix, BoolMatrix) tuple" begin
+        layer = make_layer_p13(1, 2; buf_size=5)
+        push_features!(layer, 1, Float32[1.0, 2.0])
+        data, mask = get_history(layer, 1; return_mask=true)
+        @test data isa Matrix{Float32}
+        @test mask isa Matrix{Bool}
+        @test size(data) == size(mask)
+    end
+
+    @testset "mask reflects NaN validity" begin
+        layer = make_layer_p13(1, 3; buf_size=5)
+        push_features!(layer, 1, Float32[1.0, NaN, 3.0])
+        push_features!(layer, 1, Float32[NaN, 2.0, NaN])
+
+        data, mask = get_history(layer, 1; return_mask=true)
+        @test size(data) == (3, 2)
+        @test size(mask) == (3, 2)
+
+        # Push 1: [1.0, NaN, 3.0] → mask col 1 = [true, false, true]
+        @test mask[1, 1] == true
+        @test mask[2, 1] == false
+        @test mask[3, 1] == true
+
+        # Push 2: [NaN, 2.0, NaN] → mask col 2 = [false, true, false]
+        @test mask[1, 2] == false
+        @test mask[2, 2] == true
+        @test mask[3, 2] == false
+    end
+
+    @testset "mask preserves order after ring buffer wrap" begin
+        buf_size = 3
+        layer = make_layer_p13(1, 1; buf_size=buf_size)
+        # Push: valid, NaN, valid, NaN (wraps)
+        push_features!(layer, 1, Float32[1.0])
+        push_features!(layer, 1, Float32[NaN])
+        push_features!(layer, 1, Float32[3.0])
+        push_features!(layer, 1, Float32[NaN])  # overwrites slot 1
+
+        data, mask = get_history(layer, 1; return_mask=true)
+        @test size(data) == (1, 3)
+        # After wrap, oldest-first order: slot2(NaN), slot3(valid), slot1(NaN)
+        @test mask[1, 1] == false  # oldest: was NaN push
+        @test mask[1, 2] == true   # middle: valid 3.0
+        @test mask[1, 3] == false  # newest: NaN
+    end
+
+    @testset "empty buffer with return_mask" begin
+        layer = make_layer_p13(1, 2; buf_size=5)
+        data, mask = get_history(layer, 1; return_mask=true)
+        @test size(data) == (2, 0)
+        @test size(mask) == (2, 0)
+    end
+end

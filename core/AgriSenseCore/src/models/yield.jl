@@ -27,7 +27,9 @@ function compute_derived_features(graph::LayeredHyperGraph)::AbstractMatrix{Floa
             # Sum across valid ring-buffer slots for DLI column (col 2)
             # feature_history is (nv, d, buf_size); slice col 2, valid slots
             dli_hist = ll.feature_history[:, 2, 1:hlength]   # (nv, hlength)
-            cum_dli = sum(dli_hist; dims=2)                   # (nv, 1)
+            # NaN guard: replace NaN with 0 before summing (Phase 13)
+            dli_safe = @. ifelse(isnan(dli_hist), 0.0f0, dli_hist)
+            cum_dli = sum(dli_safe; dims=2)                   # (nv, 1)
             push!(cols, Float32.(cum_dli))
         end
     end
@@ -47,10 +49,15 @@ function compute_derived_features(graph::LayeredHyperGraph)::AbstractMatrix{Floa
             #   temperature:  optimal 20-25 °C; piecewise ramp
             #   pH:           optimal 6.0-7.0;  1 - |pH - 6.5| / 3.5
             #   conductivity: lower is better; 1 - clamp(c / 4, 0, 1)
-            m_score = @. clamp(1.0f0 - abs(moisture - 0.3f0) / 0.3f0, 0.0f0, 1.0f0)
-            t_score = @. clamp(1.0f0 - abs(temperature - 22.5f0) / 17.5f0, 0.0f0, 1.0f0)
-            p_score = @. clamp(1.0f0 - abs(ph - 6.5f0) / 3.5f0, 0.0f0, 1.0f0)
-            c_score = @. clamp(1.0f0 - conductivity / 4.0f0, 0.0f0, 1.0f0)
+            # NaN guard: replace NaN vertex_features with neutral scores (Phase 13)
+            safe_m = @. ifelse(isnan(moisture), 0.3f0, moisture)
+            safe_t = @. ifelse(isnan(temperature), 22.5f0, temperature)
+            safe_p = @. ifelse(isnan(ph), 6.5f0, ph)
+            safe_c = @. ifelse(isnan(conductivity), 0.0f0, conductivity)
+            m_score = @. clamp(1.0f0 - abs(safe_m - 0.3f0) / 0.3f0, 0.0f0, 1.0f0)
+            t_score = @. clamp(1.0f0 - abs(safe_t - 22.5f0) / 17.5f0, 0.0f0, 1.0f0)
+            p_score = @. clamp(1.0f0 - abs(safe_p - 6.5f0) / 3.5f0, 0.0f0, 1.0f0)
+            c_score = @. clamp(1.0f0 - safe_c / 4.0f0, 0.0f0, 1.0f0)
 
             health = @. 0.3f0 * m_score + 0.25f0 * t_score + 0.25f0 * p_score + 0.2f0 * c_score
             push!(cols, reshape(health, nv, 1))
@@ -78,16 +85,20 @@ end
         count = 0.0f0
         total_dr = 0.0f0
         rn = req_n[i]; rp = req_p[i]; rk = req_k[i]
+        # NaN guard: treat NaN nutrient reading as 0 (worst case)
+        nn = npk_n[i]; nn = isnan(nn) ? 0.0f0 : nn
+        np_ = npk_p[i]; np_ = isnan(np_) ? 0.0f0 : np_
+        nk = npk_k[i]; nk = isnan(nk) ? 0.0f0 : nk
         if rn > 0.0f0
-            total_dr += max(rn - npk_n[i], 0.0f0) / rn
+            total_dr += max(rn - nn, 0.0f0) / rn
             count += 1.0f0
         end
         if rp > 0.0f0
-            total_dr += max(rp - npk_p[i], 0.0f0) / rp
+            total_dr += max(rp - np_, 0.0f0) / rp
             count += 1.0f0
         end
         if rk > 0.0f0
-            total_dr += max(rk - npk_k[i], 0.0f0) / rk
+            total_dr += max(rk - nk, 0.0f0) / rk
             count += 1.0f0
         end
         if count > 0.0f0
@@ -102,7 +113,10 @@ end
     i = @index(Global)
     @inbounds begin
         t = temp[i]
-        if t < 5.0f0
+        # NaN guard: unknown temp → no stress assumed
+        if isnan(t)
+            kw[i] = 1.0f0
+        elseif t < 5.0f0
             kw[i] = 0.0f0
         elseif t < 15.0f0
             kw[i] = (t - 5.0f0) / 10.0f0
@@ -140,11 +154,12 @@ function compute_stress_coefficients(graph::LayeredHyperGraph)
     _ones = backend isa CPU ? ones(Float32, nv) :
             (HAS_CUDA ? CUDA.ones(Float32, nv) : ones(Float32, nv))
 
-    # --- Water stress Ks (GPU broadcast) ---
+    # --- Water stress Ks (GPU broadcast) — NaN → Ks=1.0 (no stress assumed) ---
     ks = copy(_ones)
     if haskey(graph.layers, :soil)
         moisture = graph.layers[:soil].vertex_features[:, 1]
-        ks = @. clamp((moisture - DEFAULT_WILTING_POINT) /
+        safe_m = @. ifelse(isnan(moisture), 0.25f0, moisture)
+        ks = @. clamp((safe_m - DEFAULT_WILTING_POINT) /
                        (DEFAULT_FIELD_CAPACITY - DEFAULT_WILTING_POINT), 0.0f0, 1.0f0)
     end
 
@@ -189,22 +204,43 @@ Uses GPU solve when `X` is CUDA-backed and CPU solve otherwise.
 """
 function fit_residual_model(X::AbstractMatrix{Float32}, y_residual::AbstractVector{Float32};
                             λ::Float32=1.0f0)::Vector{Float32}
-    backend = array_backend(X)
-    n_features = size(X, 2)
+    # ── NaN guard: filter out rows containing any NaN ──────────────
+    Xc_raw = ensure_cpu(X)
+    yc_raw = ensure_cpu(y_residual)
+    n_rows = size(Xc_raw, 1)
+    valid = trues(n_rows)
+    for r in 1:n_rows
+        if isnan(yc_raw[r])
+            valid[r] = false; continue
+        end
+        for c in axes(Xc_raw, 2)
+            if isnan(Xc_raw[r, c])
+                valid[r] = false; break
+            end
+        end
+    end
+    Xc_clean = Xc_raw[valid, :]
+    yc_clean = yc_raw[valid]
 
+    n_features = size(Xc_clean, 2)
+    # If nothing valid, return zero coefficients
+    if size(Xc_clean, 1) == 0
+        return zeros(Float32, n_features)
+    end
+
+    backend = array_backend(X)
     if !(backend isa CPU) && HAS_CUDA
-        yg = y_residual isa CUDA.AnyCuArray ? y_residual : CuArray(Float32.(y_residual))
-        XtX = X' * X
-        Xty = X' * yg
+        Xg = CuArray(Xc_clean)
+        yg = CuArray(yc_clean)
+        XtX = Xg' * Xg
+        Xty = Xg' * yg
         I_gpu = CuArray(Matrix{Float32}(I, n_features, n_features))
         β_gpu = (XtX + λ * I_gpu) \ Xty
         return Float32.(ensure_cpu(β_gpu))
     end
 
-    Xc = ensure_cpu(X)
-    yc = ensure_cpu(y_residual)
-    XtX = Xc' * Xc
-    Xty = Xc' * yc
+    XtX = Xc_clean' * Xc_clean
+    Xty = Xc_clean' * yc_clean
     β = (XtX + λ * I) \ Xty
     return Float32.(β)
 end

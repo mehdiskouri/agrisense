@@ -213,3 +213,38 @@ end
         end
     end
 end
+
+# ===========================================================================
+# Phase 13 — NaN Nutrient Guards
+# ===========================================================================
+@testset "Phase 13 — NaN Nutrient Guards" begin
+
+    @testset "NaN NPK treated as worst-case deficit (0 available)" begin
+        nan_npk = Float32[NaN NaN NaN; NaN NaN NaN; NaN NaN NaN; NaN NaN NaN]
+        req = Float32[80 60 70; 80 60 70; 80 60 70; 80 60 70]
+        graph = make_nutrient_graph(current_npk=nan_npk, required_npk=req)
+        report = compute_nutrient_report(graph)
+        @test !isempty(report)
+        for r in report
+            # NaN → 0 available → full deficit
+            @test r["nitrogen_deficit"] ≈ 80.0 atol=1.0
+            @test r["phosphorus_deficit"] ≈ 60.0 atol=1.0
+            @test r["potassium_deficit"] ≈ 70.0 atol=1.0
+            @test r["severity_score"] > 0.5
+            @test r["urgency"] in ["high", "critical"]
+        end
+    end
+
+    @testset "partial NaN NPK: valid channels computed correctly" begin
+        # N is NaN, P and K are at target
+        partial_nan = Float32[NaN 60 70; NaN 60 70; NaN 60 70; NaN 60 70]
+        req = Float32[80 60 70; 80 60 70; 80 60 70; 80 60 70]
+        graph = make_nutrient_graph(current_npk=partial_nan, required_npk=req)
+        report = compute_nutrient_report(graph)
+        for r in report
+            @test r["nitrogen_deficit"] ≈ 80.0 atol=1.0  # NaN → 0 → full deficit
+            @test r["phosphorus_deficit"] ≈ 0.0 atol=1.0  # at target
+            @test r["potassium_deficit"] ≈ 0.0 atol=1.0   # at target
+        end
+    end
+end

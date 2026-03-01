@@ -292,9 +292,12 @@ function _ensure_cpu_layer(layer::HyperGraphLayer)
     B_cpu = ensure_cpu(layer.incidence)
     vf_cpu = Matrix{Float32}(ensure_cpu(layer.vertex_features))
     fh_cpu = Array{Float32,3}(ensure_cpu(layer.feature_history))
-    HyperGraphLayer(B_cpu, vf_cpu, fh_cpu,
-                    layer.history_head, layer.history_length,
-                    layer.edge_metadata, layer.vertex_ids, layer.edge_ids)
+    lyr = HyperGraphLayer(B_cpu, vf_cpu, fh_cpu,
+                           layer.history_head, layer.history_length,
+                           layer.edge_metadata, layer.vertex_ids, layer.edge_ids)
+    lyr.feature_history_mask = Array{Bool,3}(ensure_cpu(layer.feature_history_mask))
+    lyr.vertex_features_mask = Array{Bool,2}(ensure_cpu(layer.vertex_features_mask))
+    return lyr
 end
 
 """Move a single layer's numeric arrays to GPU. No-op if not HAS_CUDA."""
@@ -306,9 +309,12 @@ function _to_gpu_layer(layer::HyperGraphLayer)
     B_gpu = CUSPARSE.CuSparseMatrixCSR(B_cpu)
     vf_gpu = CuArray(ensure_cpu(layer.vertex_features))
     fh_gpu = CuArray(ensure_cpu(layer.feature_history))
-    HyperGraphLayer(B_gpu, vf_gpu, fh_gpu,
-                    layer.history_head, layer.history_length,
-                    layer.edge_metadata, layer.vertex_ids, layer.edge_ids)
+    lyr = HyperGraphLayer(B_gpu, vf_gpu, fh_gpu,
+                           layer.history_head, layer.history_length,
+                           layer.edge_metadata, layer.vertex_ids, layer.edge_ids)
+    lyr.feature_history_mask = CuArray(Array{Bool,3}(ensure_cpu(layer.feature_history_mask)))
+    lyr.vertex_features_mask = CuArray(Array{Bool,2}(ensure_cpu(layer.vertex_features_mask)))
+    return lyr
 end
 
 """
@@ -402,6 +408,8 @@ function add_vertex!(graph::LayeredHyperGraph, vertex_id::String)::Int
         cpu_lyr.incidence = vcat(cpu_lyr.incidence, spzeros(Float32, 1, ne))
         cpu_lyr.vertex_features = vcat(cpu_lyr.vertex_features, zeros(Float32, 1, d))
         cpu_lyr.feature_history = cat(cpu_lyr.feature_history, zeros(Float32, 1, d, buf_size); dims=1)
+        cpu_lyr.feature_history_mask = cat(cpu_lyr.feature_history_mask, fill(false, 1, d, buf_size); dims=1)
+        cpu_lyr.vertex_features_mask = vcat(cpu_lyr.vertex_features_mask, fill(false, 1, d))
         push!(cpu_lyr.vertex_ids, vertex_id)
         graph.layers[name] = _to_gpu_layer(cpu_lyr)
     end

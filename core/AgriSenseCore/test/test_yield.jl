@@ -302,3 +302,95 @@ end
         end
     end
 end
+
+# ===========================================================================
+# Phase 13 — NaN Yield Guard Tests
+# ===========================================================================
+@testset "Phase 13 — NaN Yield Guards" begin
+
+    @testset "NaN moisture → Ks uses safe default (0.25)" begin
+        graph = make_yield_graph(
+            soil_moisture=Float32[NaN, NaN, NaN, NaN],
+        )
+        ks, _, _, _ = compute_stress_coefficients(graph)
+        @test length(ks) == 4
+        # NaN moisture → replaced with 0.25 → Ks should be computed from 0.25
+        @test all(0.0f0 .<= ks .<= 1.0f0)  # must be valid, not NaN
+        @test !any(isnan.(ks))
+    end
+
+    @testset "NaN temperature → Kw defaults to 1.0 (no stress)" begin
+        graph = make_yield_graph(
+            temperature=Float32[NaN, NaN, NaN, NaN],
+        )
+        _, _, _, kw = compute_stress_coefficients(graph)
+        @test all(kw .≈ 1.0f0)  # NaN temp → 1.0 (no weather stress assumed)
+    end
+
+    @testset "NaN NPK → Kn uses worst-case deficit" begin
+        nan_npk = Float32[NaN NaN NaN; NaN NaN NaN; NaN NaN NaN; NaN NaN NaN]
+        graph = make_yield_graph(npk_current=nan_npk)
+        _, kn, _, _ = compute_stress_coefficients(graph)
+        @test all(0.0f0 .<= kn .<= 1.0f0)
+        @test !any(isnan.(kn))
+        # NaN → 0 nutrient → max deficit → Kn should be low
+        @test all(kn .< 0.5f0)
+    end
+
+    @testset "NaN DLI in history → cumulative DLI treats NaN as 0" begin
+        graph = make_yield_graph()
+        ll = graph.layers[:lighting]
+        for v in 1:graph.n_vertices
+            for _ in 1:5
+                push_features!(ll, v, Float32[100.0, 18.0, 0.5])  # valid DLI
+            end
+            for _ in 1:5
+                push_features!(ll, v, Float32[100.0, NaN, 0.5])   # NaN DLI
+            end
+        end
+        derived = compute_derived_features(graph)
+        @test size(derived, 1) == graph.n_vertices
+        @test size(derived, 2) >= 1
+        # Cumulative DLI should be 5 × 18.0 = 90.0 (NaN slots → 0)
+        @test all(derived[:, 1] .≈ 90.0f0)
+    end
+
+    @testset "fit_residual_model filters NaN rows" begin
+        # X with some NaN rows
+        X = Float32[1 2; NaN 4; 5 6; 7 NaN; 9 10]
+        y = Float32[1.0, 2.0, 3.0, 4.0, 5.0]
+        β = fit_residual_model(X, y; λ=1.0f0)
+        @test length(β) == 2
+        @test !any(isnan.(β))  # NaN rows filtered → β should be finite
+    end
+
+    @testset "fit_residual_model with NaN y values" begin
+        X = Float32[1 2; 3 4; 5 6; 7 8]
+        y = Float32[1.0, NaN, 3.0, 4.0]
+        β = fit_residual_model(X, y; λ=1.0f0)
+        @test length(β) == 2
+        @test !any(isnan.(β))
+    end
+
+    @testset "fit_residual_model all NaN → zero coefficients" begin
+        X = Float32[NaN NaN; NaN NaN; NaN NaN]
+        y = Float32[NaN, NaN, NaN]
+        β = fit_residual_model(X, y; λ=1.0f0)
+        @test length(β) == 2
+        @test all(β .== 0.0f0)
+    end
+
+    @testset "full yield forecast with NaN inputs does not crash" begin
+        RESIDUAL_COEFFICIENTS[] = nothing
+        graph = make_yield_graph(
+            soil_moisture=Float32[NaN, 0.30, NaN, 0.30],
+            temperature=Float32[NaN, 22.0, NaN, 22.0],
+        )
+        results = compute_yield_forecast(graph)
+        @test !isempty(results)
+        for r in results
+            @test r["yield_estimate_kg_m2"] >= 0.0
+            @test !isnan(r["yield_estimate_kg_m2"])
+        end
+    end
+end
