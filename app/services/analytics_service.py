@@ -72,6 +72,7 @@ class AnalyticsService:
         farm_service = FarmService(self.db)
         await farm_service.get_farm(farm_id)
         await self._ensure_graph(farm_id)
+        zone_id = query.zone_id
         if query.vertex_id is not None:
             vertex = await self._require_vertex(query.vertex_id, farm_id)
             query_vertex_id = vertex.id

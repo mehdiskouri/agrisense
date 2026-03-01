@@ -101,7 +101,7 @@ def bridge_stub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     }
 
     monkeypatch.setattr(julia_bridge, "build_graph", lambda _config: graph_state)
-    monkeypatch.setattr(julia_bridge, "query_farm_status", lambda _graph, _zone: {"status": "ok"})
+    monkeypatch.setattr(julia_bridge, "query_farm_status", lambda _farm_id, _zone: {"status": "ok"})
     return graph_state
 
 
