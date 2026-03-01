@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import Enum
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ _lock = threading.Lock()
 _initialized = False
 _jl_main: Any | None = None
 _agrisense_module: Any | None = None
+_logger = logging.getLogger("agrisense.julia_bridge")
 
 
 class JuliaBridgeError(RuntimeError):
@@ -90,22 +93,44 @@ def _require_module() -> Any:
 	return _agrisense_module
 
 
+def _bridge_timing(op: str, start: float, ok: bool, error: str | None = None) -> None:
+	duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
+	extra = {
+		"operation": op,
+		"duration_ms": duration_ms,
+		"ok": ok,
+		"error": error,
+	}
+	if ok:
+		_logger.info("julia_bridge_call", extra=extra)
+	else:
+		_logger.error("julia_bridge_call_failed", extra=extra)
+
+
 def build_graph(farm_config: dict[str, Any]) -> dict[str, Any]:
+	start = time.perf_counter()
 	module = _require_module()
 	payload = _to_plain(farm_config)
 	try:
 		result = module.build_graph(payload)
-		return _from_julia(result)
+		parsed = _from_julia(result)
+		_bridge_timing("build_graph", start, True)
+		return parsed
 	except Exception as exc:
+		_bridge_timing("build_graph", start, False, str(exc))
 		raise JuliaBridgeError(f"build_graph failed: {exc}") from exc
 
 
 def query_farm_status(graph_state: dict[str, Any], zone_id: str) -> dict[str, Any]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		result = module.query_farm_status(_to_plain(graph_state), str(zone_id))
-		return _from_julia(result)
+		parsed = _from_julia(result)
+		_bridge_timing("query_farm_status", start, True)
+		return parsed
 	except Exception as exc:
+		_bridge_timing("query_farm_status", start, False, str(exc))
 		raise JuliaBridgeError(f"query_farm_status failed: {exc}") from exc
 
 
@@ -114,6 +139,7 @@ def irrigation_schedule(
 	horizon_days: int,
 	weather_forecast: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		forecast = _to_plain(weather_forecast or {})
@@ -123,38 +149,49 @@ def irrigation_schedule(
 			forecast,
 		)
 		parsed = _from_julia(result)
+		_bridge_timing("irrigation_schedule", start, True)
 		return [dict(item) for item in parsed]
 	except Exception as exc:
+		_bridge_timing("irrigation_schedule", start, False, str(exc))
 		raise JuliaBridgeError(f"irrigation_schedule failed: {exc}") from exc
 
 
 def nutrient_report(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		result = module.nutrient_report(_to_plain(graph_state))
 		parsed = _from_julia(result)
+		_bridge_timing("nutrient_report", start, True)
 		return [dict(item) for item in parsed]
 	except Exception as exc:
+		_bridge_timing("nutrient_report", start, False, str(exc))
 		raise JuliaBridgeError(f"nutrient_report failed: {exc}") from exc
 
 
 def yield_forecast(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		result = module.yield_forecast(_to_plain(graph_state))
 		parsed = _from_julia(result)
+		_bridge_timing("yield_forecast", start, True)
 		return [dict(item) for item in parsed]
 	except Exception as exc:
+		_bridge_timing("yield_forecast", start, False, str(exc))
 		raise JuliaBridgeError(f"yield_forecast failed: {exc}") from exc
 
 
 def detect_anomalies(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		result = module.detect_anomalies(_to_plain(graph_state))
 		parsed = _from_julia(result)
+		_bridge_timing("detect_anomalies", start, True)
 		return [dict(item) for item in parsed]
 	except Exception as exc:
+		_bridge_timing("detect_anomalies", start, False, str(exc))
 		raise JuliaBridgeError(f"detect_anomalies failed: {exc}") from exc
 
 
@@ -163,6 +200,7 @@ def cross_layer_query(
 	layer_a: str,
 	layer_b: str,
 ) -> dict[str, Any]:
+	start = time.perf_counter()
 	module = _require_module()
 	if _jl_main is None:
 		raise JuliaBridgeError("cross_layer_query failed: Julia runtime is not initialized")
@@ -171,8 +209,11 @@ def cross_layer_query(
 		layer_a_sym = _jl_main.Symbol(str(layer_a))
 		layer_b_sym = _jl_main.Symbol(str(layer_b))
 		result = module.cross_layer_query(graph, layer_a_sym, layer_b_sym)
-		return _from_julia(result)
+		parsed = _from_julia(result)
+		_bridge_timing("cross_layer_query", start, True)
+		return parsed
 	except Exception as exc:
+		_bridge_timing("cross_layer_query", start, False, str(exc))
 		raise JuliaBridgeError(f"cross_layer_query failed: {exc}") from exc
 
 
@@ -182,6 +223,7 @@ def update_features(
 	vertex_id: str,
 	features: list[float],
 ) -> dict[str, Any]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		result = module.update_features(
@@ -190,8 +232,11 @@ def update_features(
 			str(vertex_id),
 			_to_plain(features),
 		)
-		return _from_julia(result)
+		parsed = _from_julia(result)
+		_bridge_timing("update_features", start, True)
+		return parsed
 	except Exception as exc:
+		_bridge_timing("update_features", start, False, str(exc))
 		raise JuliaBridgeError(f"update_features failed: {exc}") from exc
 
 
@@ -199,11 +244,15 @@ def train_yield_residual(
 	graph_state: dict[str, Any],
 	outcomes: dict[str, float],
 ) -> dict[str, Any]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		result = module.train_yield_residual(_to_plain(graph_state), _to_plain(outcomes))
-		return _from_julia(result)
+		parsed = _from_julia(result)
+		_bridge_timing("train_yield_residual", start, True)
+		return parsed
 	except Exception as exc:
+		_bridge_timing("train_yield_residual", start, False, str(exc))
 		raise JuliaBridgeError(f"train_yield_residual failed: {exc}") from exc
 
 
@@ -212,6 +261,7 @@ def generate_synthetic(
 	days: int = 90,
 	seed: int = 42,
 ) -> dict[str, Any]:
+	start = time.perf_counter()
 	module = _require_module()
 	try:
 		result = module.generate_synthetic(
@@ -219,6 +269,9 @@ def generate_synthetic(
 			days=int(days),
 			seed=int(seed),
 		)
-		return _from_julia(result)
+		parsed = _from_julia(result)
+		_bridge_timing("generate_synthetic", start, True)
+		return parsed
 	except Exception as exc:
+		_bridge_timing("generate_synthetic", start, False, str(exc))
 		raise JuliaBridgeError(f"generate_synthetic failed: {exc}") from exc

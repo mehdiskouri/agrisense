@@ -3,14 +3,20 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy import select, text
 
 from app.config import get_settings
 from app.database import async_session_factory, engine
+from app.middleware.logging import (
+    RequestLoggingMiddleware,
+    configure_structured_logging,
+)
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models.farm import Farm
 from app.routes import analytics, ask, farms, ingest, jobs, ws
@@ -51,6 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
       2. Dispose SQLAlchemy engine
     """
     settings = get_settings()
+    configure_structured_logging()
     logger.info(
         "AgriSense starting",
         extra={
@@ -114,6 +121,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
 
@@ -126,6 +134,50 @@ async def health_check() -> dict[str, str]:
         "service": "agrisense",
         "version": "0.1.0",
     }
+
+
+async def _run_readiness_checks(app_instance: FastAPI) -> dict[str, dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {
+        "database": {"ok": True, "message": "ok"},
+        "redis": {"ok": True, "message": "ok"},
+        "julia": {"ok": True, "message": "ok"},
+    }
+
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+    except Exception as exc:
+        checks["database"] = {"ok": False, "message": str(exc)}
+
+    redis_client = getattr(app_instance.state, "redis", None)
+    if redis_client is None:
+        checks["redis"] = {"ok": False, "message": "redis not initialized"}
+    else:
+        try:
+            await redis_client.ping()
+        except Exception as exc:
+            checks["redis"] = {"ok": False, "message": str(exc)}
+
+    try:
+        julia_bridge.initialize_julia()
+    except Exception as exc:
+        checks["julia"] = {"ok": False, "message": str(exc)}
+
+    return checks
+
+
+@app.get("/health/ready", tags=["system"])
+async def readiness_check(request: Request) -> JSONResponse:
+    checks = await _run_readiness_checks(request.app)
+    ok = all(item["ok"] for item in checks.values())
+    status_code = 200 if ok else 503
+    payload = {
+        "status": "ok" if ok else "degraded",
+        "service": "agrisense",
+        "version": "0.1.0",
+        "checks": checks,
+    }
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 # ── Router registration ────────────────────────────────────────────────────

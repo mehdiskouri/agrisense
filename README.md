@@ -78,6 +78,7 @@ docker compose up --build
 
 # API is live at http://localhost:8000
 # Swagger docs at http://localhost:8000/docs
+# Readiness checks at http://localhost:8000/health/ready
 ```
 
 ### Development (local)
@@ -123,6 +124,7 @@ To enable GPU in Docker Compose, uncomment the `deploy.resources` block in `dock
 | Group | Method | Path | Description |
 |---|---|---|---|
 | **System** | GET | `/health` | Health check |
+| **System** | GET | `/health/ready` | Deep readiness (DB + Redis + Julia) |
 | **Farms** | POST | `/api/v1/farms` | Create farm |
 | | GET | `/api/v1/farms/{id}` | Get farm + topology |
 | | GET | `/api/v1/farms/{id}/graph` | Full hypergraph structure |
@@ -137,6 +139,24 @@ To enable GPU in Docker Compose, uncomment the `deploy.resources` block in `dock
 | | GET | `/api/v1/analytics/{id}/alerts` | Active alerts |
 | **NL Query** | POST | `/api/v1/ask/{id}` | Natural language question |
 | **WebSocket** | WS | `/ws/{id}/live` | Real-time sensor feed |
+
+---
+
+## Observability
+
+- Request IDs are propagated via `x-request-id` and echoed on responses.
+- Structured request logs capture method, path, status, and duration.
+- Julia bridge operations emit per-call timings for analytics and ingestion observability.
+- Health strategy is split:
+    - `/health` for lightweight liveness.
+    - `/health/ready` for deep readiness checks (database, Redis, Julia runtime).
+
+---
+
+## Demo Queries
+
+- Use `scripts/demo_queries.sh` for curl walkthroughs across major endpoints.
+- Supported variables: `AUTH_TOKEN`, `API_KEY`, `FARM_ID`, `BASE_URL`.
 
 ---
 
@@ -192,3 +212,9 @@ agrisense/
 ## License
 
 MIT
+
+---
+
+## Live Deployment
+
+Live API URL: `TBD` (Phase 10 deployment target)
