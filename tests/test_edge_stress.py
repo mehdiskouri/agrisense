@@ -9,25 +9,21 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
 
-from app.auth.dependencies import AuthPrincipal, get_auth_principal, get_current_user
+from app.auth.dependencies import AuthPrincipal, get_current_user
 from app.auth.jwt import AuthError, create_access_token, create_refresh_token, decode_token
 from app.main import app
 from app.models.enums import (
-    AnomalyTypeEnum,
     FarmTypeEnum,
-    IrrigationTriggerEnum,
-    JobStatusEnum,
-    NpkSourceEnum,
     UserRoleEnum,
     VertexTypeEnum,
     ZoneTypeEnum,
@@ -39,8 +35,6 @@ from app.schemas.analytics import (
     NutrientReportResponse,
     YieldForecastResponse,
     ZoneAlerts,
-    ZoneDetailResponse,
-    ZoneStatus,
 )
 from app.schemas.ask import AskLanguage, AskResponse
 from app.schemas.ingest import BulkIngestReceipt, IngestReceipt
@@ -1713,8 +1707,9 @@ class TestAuthEdgeCases:
 
     @pytest.mark.asyncio
     async def test_machine_scope_invalid_scope_403(self) -> None:
-        from app.auth.dependencies import require_machine_scope
         from fastapi import HTTPException
+
+        from app.auth.dependencies import require_machine_scope
 
         dep = require_machine_scope("admin_override")
         api_principal = AuthPrincipal(
@@ -1727,7 +1722,9 @@ class TestAuthEdgeCases:
         with pytest.raises(HTTPException) as exc_info:
             await dep(api_principal)
         assert exc_info.value.status_code == 403
-        assert exc_info.value.detail["error"] == "scope_invalid"
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert detail["error"] == "scope_invalid"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1739,8 +1736,9 @@ class TestWebSocketEdgeCases:
     """WebSocket edge cases beyond the existing test_websocket.py suite."""
 
     def test_whitespace_only_token_rejected(self, fake_redis: Any, monkeypatch: Any) -> None:
-        from app.routes import ws
         from fastapi.testclient import TestClient
+
+        from app.routes import ws
 
         async def fake_farm_exists(_fid: Any) -> bool:
             return True
@@ -1751,7 +1749,7 @@ class TestWebSocketEdgeCases:
         original_lifespan = app.router.lifespan_context
 
         @asynccontextmanager
-        async def noop_lifespan(_: Any):
+        async def noop_lifespan(_: Any) -> AsyncIterator[None]:
             yield
 
         app.router.lifespan_context = noop_lifespan
@@ -1764,8 +1762,9 @@ class TestWebSocketEdgeCases:
         app.router.lifespan_context = original_lifespan
 
     def test_multiple_messages_forwarded(self, fake_redis: Any, monkeypatch: Any) -> None:
-        from app.routes import ws
         from fastapi.testclient import TestClient
+
+        from app.routes import ws
 
         farm_id = str(uuid.uuid4())
 
@@ -1791,7 +1790,7 @@ class TestWebSocketEdgeCases:
         original_lifespan = app.router.lifespan_context
 
         @asynccontextmanager
-        async def noop_lifespan(_: Any):
+        async def noop_lifespan(_: Any) -> AsyncIterator[None]:
             yield
 
         app.router.lifespan_context = noop_lifespan
@@ -1809,8 +1808,9 @@ class TestWebSocketEdgeCases:
 
     def test_bytes_payload_decoded(self, fake_redis: Any, monkeypatch: Any) -> None:
         """Redis can deliver bytes — verify they are decoded and forwarded."""
-        from app.routes import ws
         from fastapi.testclient import TestClient
+
+        from app.routes import ws
 
         farm_id = str(uuid.uuid4())
 
@@ -1833,7 +1833,7 @@ class TestWebSocketEdgeCases:
         original_lifespan = app.router.lifespan_context
 
         @asynccontextmanager
-        async def noop_lifespan(_: Any):
+        async def noop_lifespan(_: Any) -> AsyncIterator[None]:
             yield
 
         app.router.lifespan_context = noop_lifespan

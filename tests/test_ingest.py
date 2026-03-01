@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.ingest import (
     BulkIngestReceipt,
@@ -187,9 +190,9 @@ class _NestedTx:
 
 class _FakeDb:
     def __init__(self) -> None:
-        self._rows: list[object] = []
+        self._rows: list[Any] = []
 
-    def add_all(self, rows: list[object]) -> None:
+    def add_all(self, rows: list[Any]) -> None:
         self._rows = rows
 
     async def flush(self) -> None:
@@ -204,7 +207,7 @@ class _FakeDb:
 async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
     db = _FakeDb()
     fake_redis = SimpleNamespace(publish=AsyncMock())
-    service = IngestService(db, fake_redis)
+    service = IngestService(cast(AsyncSession, db), cast(Redis, fake_redis))
 
     async def _noop_validate(_farm_id: object, _layer: object) -> None:
         return None
@@ -273,7 +276,7 @@ async def test_bulk_failed_layer_does_not_corrupt_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = _FakeDb()
-    service = IngestService(db, None)
+    service = IngestService(cast(AsyncSession, db), None)
     farm_id = uuid4()
     service._graph_built = True
 

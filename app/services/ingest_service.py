@@ -147,7 +147,7 @@ class IngestService:
         pending_updates: list[dict[str, Any]] = []
         await self._ensure_graph(farm_id)
 
-        for idx, item in enumerate(readings):
+        for _idx, item in enumerate(readings):
             vertex = await self._require_vertex(
                 item.station_id, farm_id, {VertexTypeEnum.weather_station}
             )
@@ -216,7 +216,7 @@ class IngestService:
         pending_updates: list[dict[str, Any]] = []
         await self._ensure_graph(farm_id)
 
-        for idx, item in enumerate(events):
+        for _idx, item in enumerate(events):
             vertex = await self._require_vertex(item.valve_id, farm_id, {VertexTypeEnum.valve})
             row = IrrigationEvent(
                 valve_id=item.valve_id,
@@ -359,7 +359,7 @@ class IngestService:
         pending_updates: list[dict[str, Any]] = []
         await self._ensure_graph(farm_id)
 
-        for idx, item in enumerate(events):
+        for _idx, item in enumerate(events):
             await self._require_vertex(item.camera_id, farm_id, {VertexTypeEnum.camera})
             crop_bed_vertex = await self._require_vertex(
                 item.crop_bed_id, farm_id, {VertexTypeEnum.crop_bed}

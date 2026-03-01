@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -86,7 +87,7 @@ async def test_background_recompute_failure_commits_status(monkeypatch: pytest.M
     fake_session = _FakeSession()
 
     @asynccontextmanager
-    async def _fake_factory():
+    async def _fake_factory() -> AsyncIterator[_FakeSession]:
         yield fake_session
 
     async def _failing_execute(self: JobsService, _job_id: object) -> object:

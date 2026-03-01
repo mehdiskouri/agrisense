@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
@@ -12,7 +13,7 @@ from app.routes import ws
 
 
 @asynccontextmanager
-async def _noop_lifespan(_: Any):
+async def _noop_lifespan(_: Any) -> AsyncIterator[None]:
     yield
 
 

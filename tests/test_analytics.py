@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.analytics import (
     AlertsResponse,
@@ -111,10 +114,10 @@ async def test_irrigation_schedule_cache_behavior(monkeypatch: pytest.MonkeyPatc
     farm_id = uuid4()
     fake_db = object()
     fake_redis = SimpleNamespace(get=AsyncMock(return_value=None), setex=AsyncMock())
-    service = AnalyticsService(fake_db, fake_redis)
+    service = AnalyticsService(cast(AsyncSession, fake_db), cast(Redis, fake_redis))
 
     farm = SimpleNamespace(id=farm_id)
-    graph = {"farm_id": str(farm_id)}
+    graph: dict[str, object] = {"farm_id": str(farm_id)}
 
     async def fake_get_farm(self: FarmService, _farm_id: object) -> object:
         return farm
@@ -131,6 +134,7 @@ async def test_irrigation_schedule_cache_behavior(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(FarmService, "get_farm", fake_get_farm)
     monkeypatch.setattr(FarmService, "get_graph", fake_get_graph)
     monkeypatch.setattr(julia_bridge, "irrigation_schedule", fake_schedule)
+    monkeypatch.setattr(julia_bridge, "ensure_graph_cached", lambda _farm_id: None)
 
     first = await service.get_irrigation_schedule(farm_id, horizon_days=7)
     assert isinstance(first, IrrigationScheduleResponse)

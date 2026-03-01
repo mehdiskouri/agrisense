@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import FarmTypeEnum, VertexTypeEnum, ZoneTypeEnum
 from app.services import julia_bridge
@@ -225,7 +227,7 @@ async def test_get_farm_not_found_maps_to_404(
 
 @pytest.mark.asyncio
 async def test_query_zone_status_uses_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
-    service = FarmService(SimpleNamespace())
+    service = FarmService(cast(AsyncSession, SimpleNamespace()))
     farm_id = uuid4()
     zone_id = uuid4()
 

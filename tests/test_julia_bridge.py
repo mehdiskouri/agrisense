@@ -74,7 +74,13 @@ class _FakeModule:
         features: list[float],
     ) -> dict[str, object]:
         self.last_call = ("update_features", (graph_state, layer, vertex_id, features), {})
-        return {"ok": True, "farm_id": graph_state.get("farm_id", ""), "version": 1, "layer": layer, "vertex_id": vertex_id}
+        return {
+            "ok": True,
+            "farm_id": graph_state.get("farm_id", ""),
+            "version": 1,
+            "layer": layer,
+            "vertex_id": vertex_id,
+        }
 
     def batch_update_features(
         self,

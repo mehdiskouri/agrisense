@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from httpx import AsyncClient
 
@@ -8,7 +10,7 @@ from app import main
 
 @pytest.mark.asyncio
 async def test_health_ready_ok(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _ok(_app):
+    async def _ok(_app: Any) -> dict[str, dict[str, Any]]:
         return {
             "database": {"ok": True, "message": "ok"},
             "redis": {"ok": True, "message": "ok"},
@@ -26,7 +28,7 @@ async def test_health_ready_ok(client: AsyncClient, monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.asyncio
 async def test_health_ready_degraded(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _bad(_app):
+    async def _bad(_app: Any) -> dict[str, dict[str, Any]]:
         return {
             "database": {"ok": False, "message": "db down"},
             "redis": {"ok": True, "message": "ok"},
