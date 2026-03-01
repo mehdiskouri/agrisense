@@ -7,7 +7,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_role
 from app.database import get_db
+from app.models.enums import UserRoleEnum
 from app.schemas.analytics import (
 	AlertsResponse,
 	FarmStatusResponse,
@@ -35,6 +37,14 @@ async def get_farm_status(
 	farm_id: uuid.UUID,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> FarmStatusResponse:
 	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -50,6 +60,14 @@ async def get_zone_detail(
 	request: Request,
 	vertex_id: uuid.UUID | None = Query(default=None),
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> ZoneDetailResponse:
 	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
 	query = ZoneDetailQuery(zone_id=zone_id, vertex_id=vertex_id)
@@ -65,6 +83,14 @@ async def get_vertex_detail(
 	vertex_id: uuid.UUID,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> ZoneDetailResponse:
 	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
 	query = ZoneDetailQuery(vertex_id=vertex_id)
@@ -80,6 +106,14 @@ async def get_irrigation_schedule(
 	request: Request,
 	horizon_days: int = Query(default=7, ge=1, le=30),
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> IrrigationScheduleResponse:
 	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -93,6 +127,14 @@ async def get_nutrient_report(
 	farm_id: uuid.UUID,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> NutrientReportResponse:
 	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -106,6 +148,14 @@ async def get_yield_forecast(
 	farm_id: uuid.UUID,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> YieldForecastResponse:
 	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -119,6 +169,14 @@ async def get_active_alerts(
 	farm_id: uuid.UUID,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> AlertsResponse:
 	service = AnalyticsService(db, getattr(request.app.state, "redis", None))
 	try:

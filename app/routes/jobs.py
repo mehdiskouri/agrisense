@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_machine_scope
 from app.database import async_session_factory, get_db
 from app.schemas.jobs import JobCreateResponse, JobStatusResponse
 from app.services.jobs_service import JobsService
@@ -41,6 +42,7 @@ async def create_recompute_job(
 	request: Request,
 	background_tasks: BackgroundTasks,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("jobs")),
 ) -> JobCreateResponse:
 	service = JobsService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -57,6 +59,7 @@ async def get_job_status(
 	job_id: uuid.UUID,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("jobs")),
 ) -> JobStatusResponse:
 	service = JobsService(db, getattr(request.app.state, "redis", None))
 	try:

@@ -11,10 +11,11 @@ from sqlalchemy import select, text
 
 from app.config import get_settings
 from app.database import async_session_factory, engine
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.models.farm import Farm
-from app.routes import analytics, farms, ingest, jobs, ws
-from app.services.farm_service import FarmService
+from app.routes import analytics, ask, farms, ingest, jobs, ws
 from app.services import julia_bridge
+from app.services.farm_service import FarmService
 
 logger = logging.getLogger("agrisense")
 
@@ -113,6 +114,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
 
 
 # ── Health check ────────────────────────────────────────────────────────────
@@ -131,4 +133,5 @@ app.include_router(farms.router, prefix="/api/v1")
 app.include_router(ingest.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(ask.router, prefix="/api/v1")
 app.include_router(ws.router)

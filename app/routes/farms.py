@@ -8,7 +8,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_role
 from app.database import get_db
+from app.models.enums import UserRoleEnum
 from app.schemas.farm import (
 	FarmCreate,
 	FarmGraphRead,
@@ -82,6 +84,7 @@ def _to_farm_read(farm: Any, service: FarmService) -> FarmRead:
 async def create_farm(
 	payload: FarmCreate,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
 ) -> FarmRead:
 	service = FarmService(db)
 	try:
@@ -93,7 +96,17 @@ async def create_farm(
 
 
 @router.get("", response_model=FarmListRead)
-async def list_farms(db: AsyncSession = Depends(get_db)) -> FarmListRead:
+async def list_farms(
+	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
+) -> FarmListRead:
 	service = FarmService(db)
 	try:
 		farms = await service.list_farms()
@@ -106,6 +119,14 @@ async def list_farms(db: AsyncSession = Depends(get_db)) -> FarmListRead:
 async def get_farm(
 	farm_id: uuid.UUID,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> FarmRead:
 	service = FarmService(db)
 	try:
@@ -120,6 +141,7 @@ async def add_zone(
 	farm_id: uuid.UUID,
 	payload: ZoneCreate,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
 ) -> ZoneRead:
 	service = FarmService(db)
 	try:
@@ -134,6 +156,9 @@ async def register_vertex(
 	farm_id: uuid.UUID,
 	payload: VertexCreate,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(UserRoleEnum.admin, UserRoleEnum.agronomist, UserRoleEnum.field_operator)
+	),
 ) -> VertexRead:
 	service = FarmService(db)
 	try:
@@ -147,6 +172,14 @@ async def register_vertex(
 async def get_graph(
 	farm_id: uuid.UUID,
 	db: AsyncSession = Depends(get_db),
+	_user: object = Depends(
+		require_role(
+			UserRoleEnum.admin,
+			UserRoleEnum.agronomist,
+			UserRoleEnum.field_operator,
+			UserRoleEnum.readonly,
+		)
+	),
 ) -> FarmGraphRead:
 	service = FarmService(db)
 	try:

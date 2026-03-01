@@ -38,9 +38,18 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
+    jwt_refresh_token_expire_minutes: int = 10080
+    api_key_header_name: str = "x-api-key"
+
+    # ── Rate limiting ─────────────────────────────────────────────────────
+    rate_limit_user_per_minute: int = 100
+    rate_limit_api_key_per_minute: int = 1000
 
     # ── LLM ─────────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
+    anthropic_model: str = "claude-3-5-sonnet-20241022"
+    anthropic_base_url: str = "https://api.anthropic.com/v1/messages"
+    anthropic_timeout_seconds: float = 15.0
 
     # ── Farm defaults ───────────────────────────────────────────────────────
     farm_default_type: FarmType = FarmType.greenhouse

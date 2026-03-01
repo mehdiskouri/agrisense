@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_machine_scope
 from app.database import get_db
 from app.schemas.ingest import (
 	BulkIngestReceipt,
@@ -34,6 +35,7 @@ async def ingest_soil(
 	payload: SoilIngestRequest,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("ingest")),
 ) -> IngestReceipt:
 	service = IngestService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -47,6 +49,7 @@ async def ingest_weather(
 	payload: WeatherIngestRequest,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("ingest")),
 ) -> IngestReceipt:
 	service = IngestService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -60,6 +63,7 @@ async def ingest_irrigation(
 	payload: IrrigationIngestRequest,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("ingest")),
 ) -> IngestReceipt:
 	service = IngestService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -73,6 +77,7 @@ async def ingest_npk(
 	payload: NpkIngestRequest,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("ingest")),
 ) -> IngestReceipt:
 	service = IngestService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -86,6 +91,7 @@ async def ingest_vision(
 	payload: VisionIngestRequest,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("ingest")),
 ) -> IngestReceipt:
 	service = IngestService(db, getattr(request.app.state, "redis", None))
 	try:
@@ -99,6 +105,7 @@ async def ingest_bulk(
 	payload: BulkIngestRequest,
 	request: Request,
 	db: AsyncSession = Depends(get_db),
+	_principal: object = Depends(require_machine_scope("ingest")),
 ) -> BulkIngestReceipt:
 	service = IngestService(db, getattr(request.app.state, "redis", None))
 	try:

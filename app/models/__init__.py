@@ -7,8 +7,6 @@ autogenerate sees all tables.  Application code can also do::
 """
 
 # ── Base & Mixins ───────────────────────────────────────────────────────────
-# ── Auth models ─────────────────────────────────────────────────────────────
-from app.auth.models import APIKey, User
 from app.models.base import (
     Base,
     TimeSeriesMixin,
@@ -47,7 +45,6 @@ from app.models.sensors import (
 )
 
 __all__ = [
-    "APIKey",
     "AnomalyTypeEnum",
     # Base & mixins
     "Base",
@@ -70,8 +67,6 @@ __all__ = [
     "TimeSeriesMixin",
     "TimestampMixin",
     "UUIDPrimaryKeyMixin",
-    # Auth
-    "User",
     "UserRoleEnum",
     "RecomputeJob",
     "Vertex",
