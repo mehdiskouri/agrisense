@@ -40,9 +40,9 @@ class UpdateFeaturesResponse(TypedDict, total=False):
 class TrainYieldResidualResponse(TypedDict, total=False):
     """Training summary from residual model fit."""
 
-    ok: bool
-    metrics: dict[str, float]
-    model: dict[str, Any]
+    status: str
+    n_observations: int
+    n_coefficients: int
 
 
 class SyntheticGenerationResponse(TypedDict, total=False):

@@ -131,10 +131,51 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Persistent residual model coefficients (module-level state)
+# Per-farm residual model coefficients (keyed by farm_id)
 # ---------------------------------------------------------------------------
-const RESIDUAL_COEFFICIENTS = Ref{Union{Nothing, Vector{Float32}}}(nothing)
-const RESIDUAL_STD = Ref{Union{Nothing, Float32}}(nothing)
+const RESIDUAL_COEFF_CACHE = Dict{String, Vector{Float32}}()
+const RESIDUAL_STD_CACHE = Dict{String, Float32}()
+
+"""
+    get_residual_coefficients(farm_id) -> Union{Nothing, Vector{Float32}}
+
+Return stored ridge coefficients for `farm_id`, or `nothing` if not trained.
+"""
+function get_residual_coefficients(farm_id::String)::Union{Nothing, Vector{Float32}}
+    return get(RESIDUAL_COEFF_CACHE, farm_id, nothing)
+end
+
+"""
+    get_residual_std(farm_id) -> Union{Nothing, Float32}
+
+Return stored residual standard deviation for `farm_id`, or `nothing`.
+"""
+function get_residual_std(farm_id::String)::Union{Nothing, Float32}
+    return get(RESIDUAL_STD_CACHE, farm_id, nothing)
+end
+
+"""
+    evict_residual!(farm_id) -> Bool
+
+Remove residual model state for `farm_id`. Returns `true` if it was present.
+"""
+function evict_residual!(farm_id::String)::Bool
+    had = haskey(RESIDUAL_COEFF_CACHE, farm_id)
+    delete!(RESIDUAL_COEFF_CACHE, farm_id)
+    delete!(RESIDUAL_STD_CACHE, farm_id)
+    return had
+end
+
+"""
+    clear_residual_cache!() -> Nothing
+
+Remove all residual model state.
+"""
+function clear_residual_cache!()
+    empty!(RESIDUAL_COEFF_CACHE)
+    empty!(RESIDUAL_STD_CACHE)
+    return nothing
+end
 
 # ---------------------------------------------------------------------------
 # Stress coefficient computations (GPU-accelerated)
@@ -290,11 +331,13 @@ function train_yield_residual!(graph::LayeredHyperGraph,
         push!(y_res, actual - y_fao_cpu[idx])
     end
 
+    farm_id = graph.farm_id
+
     if length(obs_indices) < n_features + 1
         @warn "Not enough observations ($(length(obs_indices))) for ridge regression — " *
               "need at least $(n_features + 1). Coefficients not updated."
-        RESIDUAL_COEFFICIENTS[] = nothing
-        RESIDUAL_STD[] = nothing
+        delete!(RESIDUAL_COEFF_CACHE, farm_id)
+        delete!(RESIDUAL_STD_CACHE, farm_id)
         return nothing
     end
 
@@ -308,8 +351,8 @@ function train_yield_residual!(graph::LayeredHyperGraph,
     resid = y_res_vec .- y_hat
     sigma = Float32(std(resid; corrected=true))
 
-    RESIDUAL_COEFFICIENTS[] = β
-    RESIDUAL_STD[] = isfinite(sigma) ? max(sigma, 1.0f-4) : 1.0f-4
+    RESIDUAL_COEFF_CACHE[farm_id] = β
+    RESIDUAL_STD_CACHE[farm_id] = isfinite(sigma) ? max(sigma, 1.0f-4) : 1.0f-4
     return nothing
 end
 
@@ -335,10 +378,12 @@ function compute_yield_forecast(graph::LayeredHyperGraph)::Vector{Dict{String,An
     # FAO base prediction (GPU broadcast)
     y_fao = @. y_pot * ks * kn * kl * kw
 
-    # Ridge residual correction
+    # Ridge residual correction (per-farm coefficients)
+    farm_id = graph.farm_id
     y_final = copy(y_fao)
     model_layer = "fao_only"
-    if RESIDUAL_COEFFICIENTS[] !== nothing
+    β_farm = get_residual_coefficients(farm_id)
+    if β_farm !== nothing
         feature_layers = Symbol[]
         for lsym in [:soil, :lighting, :crop_requirements, :vision]
             haskey(graph.layers, lsym) && push!(feature_layers, lsym)
@@ -346,11 +391,10 @@ function compute_yield_forecast(graph::LayeredHyperGraph)::Vector{Dict{String,An
         X_raw = multi_layer_features(graph, feature_layers)
         X_derived = compute_derived_features(graph)
         X = size(X_derived, 2) > 0 ? hcat(X_raw, X_derived) : X_raw
-        β = RESIDUAL_COEFFICIENTS[]
         # Pull to CPU for matmul with β (small vector, always CPU)
         X_cpu = ensure_cpu(X)
-        if size(X_cpu, 2) == length(β)
-            y_residual_cpu = X_cpu * β
+        if size(X_cpu, 2) == length(β_farm)
+            y_residual_cpu = X_cpu * β_farm
             y_fao_cpu = ensure_cpu(y_fao)
             y_final_cpu = y_fao_cpu .+ y_residual_cpu
             # We'll use CPU from here since we need Dict building anyway
@@ -362,9 +406,10 @@ function compute_yield_forecast(graph::LayeredHyperGraph)::Vector{Dict{String,An
     # Confidence intervals:
     # - residual model: Gaussian 95% CI using trained residual std
     # - fao_only: conservative proportional fallback
-    use_residual_ci = model_layer == "fao_plus_residual" && RESIDUAL_STD[] !== nothing
+    σ_farm = get_residual_std(farm_id)
+    use_residual_ci = model_layer == "fao_plus_residual" && σ_farm !== nothing
     z95 = 1.96f0
-    residual_sigma = use_residual_ci ? Float32(RESIDUAL_STD[]) : 0.0f0
+    residual_sigma = use_residual_ci ? Float32(σ_farm) : 0.0f0
 
     # Pull everything to CPU for Dict building
     y_final_cpu = ensure_cpu(y_final)

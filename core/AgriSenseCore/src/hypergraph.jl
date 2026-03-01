@@ -204,6 +204,7 @@ function evict_graph!(farm_id::String)::Bool
     had = haskey(GRAPH_CACHE, farm_id)
     delete!(GRAPH_CACHE, farm_id)
     delete!(GRAPH_VERSION, farm_id)
+    evict_residual!(farm_id)
     return had
 end
 
@@ -215,6 +216,7 @@ Remove all graphs from the cache.
 function clear_cache!()
     empty!(GRAPH_CACHE)
     empty!(GRAPH_VERSION)
+    clear_residual_cache!()
     return nothing
 end
 

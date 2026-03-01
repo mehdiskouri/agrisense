@@ -93,7 +93,8 @@ export get_graph_by_id, ensure_graph
 export compute_irrigation_schedule, compute_nutrient_report
 export compute_yield_forecast, compute_anomaly_detection
 export compute_stress_coefficients, fit_residual_model, train_yield_residual!
-export RESIDUAL_COEFFICIENTS, RESIDUAL_STD
+export RESIDUAL_COEFF_CACHE, RESIDUAL_STD_CACHE
+export get_residual_coefficients, get_residual_std, evict_residual!, clear_residual_cache!
 export hargreaves_et0, growth_progress_to_kc
 export DEFAULT_WILTING_POINT, DEFAULT_FIELD_CAPACITY, DEFAULT_VALVE_CAPACITY
 export MIN_HISTORY_FOR_ANOMALY

@@ -140,8 +140,8 @@ end
     end
 
     @testset "model_layer reports fao_only without trained residual" begin
-        # Reset residual coefficients
-        RESIDUAL_COEFFICIENTS[] = nothing
+        # Reset residual coefficients for this farm
+        clear_residual_cache!()
 
         graph = make_yield_graph()
         results = compute_yield_forecast(graph)
@@ -215,7 +215,7 @@ end
     end
 
     @testset "confidence interval contains FAO target under perfect conditions" begin
-        RESIDUAL_COEFFICIENTS[] = nothing
+        clear_residual_cache!()
         graph = make_yield_graph(
             soil_moisture=Float32[0.30, 0.30, 0.30, 0.30],
             temperature=Float32[22.0, 22.0, 22.0, 22.0],
@@ -289,8 +289,8 @@ end
         )
 
         train_yield_residual!(graph, actual)
-        @test RESIDUAL_COEFFICIENTS[] !== nothing
-        @test RESIDUAL_STD[] !== nothing
+        @test get_residual_coefficients("yield-train-ci") !== nothing
+        @test get_residual_std("yield-train-ci") !== nothing
 
         results = compute_yield_forecast(graph)
         @test !isempty(results)
@@ -298,7 +298,7 @@ end
             @test r["model_layer"] == "fao_plus_residual"
             @test r["confidence"] ≈ 0.95 atol=1e-6
             half = (r["yield_upper"] - r["yield_lower"]) / 2.0
-            @test half ≈ Float64(1.96f0 * RESIDUAL_STD[]) atol=1e-3
+            @test half ≈ Float64(1.96f0 * get_residual_std("yield-train-ci")) atol=1e-3
         end
     end
 end
@@ -387,7 +387,7 @@ end
     end
 
     @testset "full yield forecast with NaN inputs does not crash" begin
-        RESIDUAL_COEFFICIENTS[] = nothing
+        clear_residual_cache!()
         graph = make_yield_graph(
             soil_moisture=Float32[NaN, 0.30, NaN, 0.30],
             temperature=Float32[NaN, 22.0, NaN, 22.0],
@@ -399,5 +399,185 @@ end
             @test r["yield_estimate_kg_m2"] >= 0.0
             @test !isnan(r["yield_estimate_kg_m2"])
         end
+    end
+end
+
+# ===========================================================================
+# Phase 15 — Per-Farm Residual Isolation Tests
+# ===========================================================================
+@testset "Phase 15 — Per-Farm Residual Isolation" begin
+
+    function make_residual_graph(farm_id::String; nv::Int=8,
+                                 target_yield::Float32=5.0f0)
+        vertices = [Dict{String,Any}("id" => "v$i", "type" => "crop_bed") for i in 1:nv]
+        edges = [Dict{String,Any}(
+            "id" => "e-crop-1", "layer" => "crop_requirements",
+            "vertex_ids" => ["v$i" for i in 1:nv],
+            "metadata" => Dict{String,Any}(),
+        )]
+        config = Dict{String,Any}(
+            "farm_id" => farm_id,
+            "farm_type" => "greenhouse",
+            "active_layers" => ["crop_requirements"],
+            "zones" => [],
+            "models" => Dict("irrigation" => false, "nutrients" => false,
+                             "yield_forecast" => true, "anomaly_detection" => false),
+            "vertices" => vertices,
+            "edges" => edges,
+        )
+        profile = FarmProfile(config)
+        graph = to_cpu(build_hypergraph(profile, config["vertices"], config["edges"]))
+        for v in 1:nv
+            graph.layers[:crop_requirements].vertex_features[v, 1] = target_yield
+            graph.layers[:crop_requirements].vertex_features[v, 2] = 0.5f0
+            graph.layers[:crop_requirements].vertex_features[v, 3] = 80.0f0
+            graph.layers[:crop_requirements].vertex_features[v, 4] = 60.0f0
+            graph.layers[:crop_requirements].vertex_features[v, 5] = 70.0f0
+        end
+        return graph
+    end
+
+    @testset "multi-farm residual isolation" begin
+        clear_residual_cache!()
+
+        # Farm A: train with positive residuals
+        graph_a = make_residual_graph("farm-A")
+        actual_a = Dict{String,Float32}(
+            "v1" => 6.0f0, "v2" => 6.2f0, "v3" => 5.8f0, "v4" => 6.1f0,
+            "v5" => 6.3f0, "v6" => 5.9f0, "v7" => 6.0f0, "v8" => 6.4f0,
+        )
+        train_yield_residual!(graph_a, actual_a)
+
+        # Farm B: train with negative residuals
+        graph_b = make_residual_graph("farm-B")
+        actual_b = Dict{String,Float32}(
+            "v1" => 3.0f0, "v2" => 3.2f0, "v3" => 2.8f0, "v4" => 3.1f0,
+            "v5" => 2.9f0, "v6" => 3.3f0, "v7" => 3.0f0, "v8" => 2.7f0,
+        )
+        train_yield_residual!(graph_b, actual_b)
+
+        # Both should have independent coefficients
+        @test get_residual_coefficients("farm-A") !== nothing
+        @test get_residual_coefficients("farm-B") !== nothing
+        @test get_residual_coefficients("farm-A") != get_residual_coefficients("farm-B")
+
+        # Farm A forecast should use Farm A's model (yields > 5.0)
+        results_a = compute_yield_forecast(graph_a)
+        @test !isempty(results_a)
+        for r in results_a
+            @test r["model_layer"] == "fao_plus_residual"
+            @test r["yield_estimate_kg_m2"] > 5.0
+        end
+
+        # Farm B forecast should use Farm B's model (yields < 5.0)
+        results_b = compute_yield_forecast(graph_b)
+        @test !isempty(results_b)
+        for r in results_b
+            @test r["model_layer"] == "fao_plus_residual"
+            @test r["yield_estimate_kg_m2"] < 5.0
+        end
+
+        # Training Farm B must NOT have overwritten Farm A
+        results_a2 = compute_yield_forecast(graph_a)
+        for r in results_a2
+            @test r["yield_estimate_kg_m2"] > 5.0
+        end
+    end
+
+    @testset "untrained farm gets fao_only" begin
+        clear_residual_cache!()
+
+        # Train Farm A only
+        graph_a = make_residual_graph("farm-trained")
+        actual_a = Dict{String,Float32}(
+            "v1" => 6.0f0, "v2" => 6.2f0, "v3" => 5.8f0, "v4" => 6.1f0,
+            "v5" => 6.3f0, "v6" => 5.9f0, "v7" => 6.0f0, "v8" => 6.4f0,
+        )
+        train_yield_residual!(graph_a, actual_a)
+
+        # Untrained Farm C should get fao_only
+        graph_c = make_residual_graph("farm-untrained")
+        results_c = compute_yield_forecast(graph_c)
+        @test !isempty(results_c)
+        for r in results_c
+            @test r["model_layer"] == "fao_only"
+        end
+
+        # Trained Farm A should still get fao_plus_residual
+        results_a = compute_yield_forecast(graph_a)
+        for r in results_a
+            @test r["model_layer"] == "fao_plus_residual"
+        end
+    end
+
+    @testset "evict_residual! removes per-farm state" begin
+        clear_residual_cache!()
+
+        graph = make_residual_graph("farm-evict")
+        actual = Dict{String,Float32}(
+            "v1" => 6.0f0, "v2" => 6.2f0, "v3" => 5.8f0, "v4" => 6.1f0,
+            "v5" => 6.3f0, "v6" => 5.9f0, "v7" => 6.0f0, "v8" => 6.4f0,
+        )
+        train_yield_residual!(graph, actual)
+        @test get_residual_coefficients("farm-evict") !== nothing
+
+        @test evict_residual!("farm-evict") == true
+        @test get_residual_coefficients("farm-evict") === nothing
+        @test get_residual_std("farm-evict") === nothing
+
+        # Double evict returns false
+        @test evict_residual!("farm-evict") == false
+    end
+
+    @testset "clear_residual_cache! removes all state" begin
+        graph_a = make_residual_graph("farm-clear-A")
+        graph_b = make_residual_graph("farm-clear-B")
+        actual = Dict{String,Float32}(
+            "v1" => 6.0f0, "v2" => 6.2f0, "v3" => 5.8f0, "v4" => 6.1f0,
+            "v5" => 6.3f0, "v6" => 5.9f0, "v7" => 6.0f0, "v8" => 6.4f0,
+        )
+        train_yield_residual!(graph_a, actual)
+        train_yield_residual!(graph_b, actual)
+        @test get_residual_coefficients("farm-clear-A") !== nothing
+        @test get_residual_coefficients("farm-clear-B") !== nothing
+
+        clear_residual_cache!()
+        @test get_residual_coefficients("farm-clear-A") === nothing
+        @test get_residual_coefficients("farm-clear-B") === nothing
+    end
+
+    @testset "evict_graph! also evicts residual" begin
+        clear_cache!()  # clears both graph cache and residual cache
+
+        graph = make_residual_graph("farm-graph-evict")
+        cache_graph!("farm-graph-evict", graph)
+        actual = Dict{String,Float32}(
+            "v1" => 6.0f0, "v2" => 6.2f0, "v3" => 5.8f0, "v4" => 6.1f0,
+            "v5" => 6.3f0, "v6" => 5.9f0, "v7" => 6.0f0, "v8" => 6.4f0,
+        )
+        train_yield_residual!(graph, actual)
+        @test get_residual_coefficients("farm-graph-evict") !== nothing
+
+        evict_graph!("farm-graph-evict")
+        @test get_residual_coefficients("farm-graph-evict") === nothing
+        @test get_cached_graph("farm-graph-evict") === nothing
+    end
+
+    @testset "insufficient data evicts existing model for that farm" begin
+        clear_residual_cache!()
+
+        graph = make_residual_graph("farm-insufficient")
+        actual = Dict{String,Float32}(
+            "v1" => 6.0f0, "v2" => 6.2f0, "v3" => 5.8f0, "v4" => 6.1f0,
+            "v5" => 6.3f0, "v6" => 5.9f0, "v7" => 6.0f0, "v8" => 6.4f0,
+        )
+        train_yield_residual!(graph, actual)
+        @test get_residual_coefficients("farm-insufficient") !== nothing
+
+        # Re-train with too few observations — should evict previous model
+        too_few = Dict{String,Float32}("v1" => 6.0f0)
+        train_yield_residual!(graph, too_few)
+        @test get_residual_coefficients("farm-insufficient") === nothing
+        @test get_residual_std("farm-insufficient") === nothing
     end
 end

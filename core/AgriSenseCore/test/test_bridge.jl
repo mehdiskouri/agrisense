@@ -295,4 +295,82 @@ end
         ]
         @test_throws ErrorException batch_update_features(farm_id, updates)
     end
+
+    # -----------------------------------------------------------------------
+    # Phase 15: Per-farm residual isolation via bridge API
+    # -----------------------------------------------------------------------
+
+    @testset "Phase 15: train_yield_residual per-farm isolation" begin
+        clear_cache!()
+
+        # Build two farms with crop_requirements layer for residual training
+        function make_crop_graph(fid::String; nv::Int=8)
+            verts = [Dict{String,Any}("id" => "v$i", "type" => "crop_bed") for i in 1:nv]
+            edgs = [Dict{String,Any}(
+                "id" => "e-crop-1", "layer" => "crop_requirements",
+                "vertex_ids" => ["v$i" for i in 1:nv],
+                "metadata" => Dict{String,Any}(),
+            )]
+            cfg = Dict{String,Any}(
+                "farm_id" => fid,
+                "farm_type" => "greenhouse",
+                "active_layers" => ["crop_requirements"],
+                "zones" => [],
+                "models" => Dict("irrigation" => false, "nutrients" => false,
+                                 "yield_forecast" => true, "anomaly_detection" => false),
+                "vertices" => verts,
+                "edges" => edgs,
+            )
+            profile = FarmProfile(cfg)
+            g = to_cpu(build_hypergraph(profile, cfg["vertices"], cfg["edges"]))
+            for v in 1:nv
+                g.layers[:crop_requirements].vertex_features[v, 1] = 5.0f0
+                g.layers[:crop_requirements].vertex_features[v, 2] = 0.5f0
+                g.layers[:crop_requirements].vertex_features[v, 3] = 80.0f0
+                g.layers[:crop_requirements].vertex_features[v, 4] = 60.0f0
+                g.layers[:crop_requirements].vertex_features[v, 5] = 70.0f0
+            end
+            cache_graph!(fid, g)
+            return g
+        end
+
+        g_a = make_crop_graph("bridge-farm-A")
+        g_b = make_crop_graph("bridge-farm-B")
+
+        outcomes_a = Dict{String,Any}(
+            "v1" => 6.0, "v2" => 6.2, "v3" => 5.8, "v4" => 6.1,
+            "v5" => 6.3, "v6" => 5.9, "v7" => 6.0, "v8" => 6.4,
+        )
+        outcomes_b = Dict{String,Any}(
+            "v1" => 3.0, "v2" => 3.2, "v3" => 2.8, "v4" => 3.1,
+            "v5" => 2.9, "v6" => 3.3, "v7" => 3.0, "v8" => 2.7,
+        )
+
+        res_a = train_yield_residual(Dict{String,Any}("farm_id" => "bridge-farm-A"), outcomes_a)
+        @test res_a["status"] == "trained"
+        @test res_a["n_coefficients"] > 0
+
+        res_b = train_yield_residual(Dict{String,Any}("farm_id" => "bridge-farm-B"), outcomes_b)
+        @test res_b["status"] == "trained"
+        @test res_b["n_coefficients"] > 0
+
+        # Farm A forecast via bridge: yields should be > 5
+        forecast_a = yield_forecast(Dict{String,Any}("farm_id" => "bridge-farm-A"))
+        @test !isempty(forecast_a)
+        @test forecast_a[1]["model_layer"] == "fao_plus_residual"
+        @test forecast_a[1]["yield_estimate_kg_m2"] > 5.0
+
+        # Farm B forecast via bridge: yields should be < 5
+        forecast_b = yield_forecast(Dict{String,Any}("farm_id" => "bridge-farm-B"))
+        @test !isempty(forecast_b)
+        @test forecast_b[1]["model_layer"] == "fao_plus_residual"
+        @test forecast_b[1]["yield_estimate_kg_m2"] < 5.0
+
+        # Verify independence: Farm A NOT overwritten by Farm B
+        forecast_a2 = yield_forecast(Dict{String,Any}("farm_id" => "bridge-farm-A"))
+        @test forecast_a2[1]["yield_estimate_kg_m2"] > 5.0
+
+        evict_graph!("bridge-farm-A")
+        evict_graph!("bridge-farm-B")
+    end
 end

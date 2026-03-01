@@ -94,7 +94,7 @@ class _FakeModule:
         outcomes: dict[str, float],
     ) -> dict[str, object]:
         self.last_call = ("train_yield_residual", (graph_state, outcomes), {})
-        return {"status": "trained"}
+        return {"status": "trained", "n_observations": len(outcomes), "n_coefficients": 1}
 
     def generate_synthetic(self, **kwargs: object) -> dict[str, object]:
         self.last_call = ("generate_synthetic", (), kwargs)

@@ -196,15 +196,17 @@ Returns a status dict.
 function train_yield_residual(graph_state::Dict,
                                outcomes::Dict)::Dict{String,Any}
     graph = _get_graph(graph_state)
+    farm_id = graph.farm_id
     actual = Dict{String,Float32}(
         string(k) => Float32(v) for (k, v) in outcomes
     )
     train_yield_residual!(graph, actual)
-    has_coeff = RESIDUAL_COEFFICIENTS[] !== nothing
+    coeffs = get_residual_coefficients(farm_id)
+    has_coeff = coeffs !== nothing
     return Dict{String,Any}(
         "status" => has_coeff ? "trained" : "insufficient_data",
         "n_observations" => length(actual),
-        "n_coefficients" => has_coeff ? length(RESIDUAL_COEFFICIENTS[]) : 0,
+        "n_coefficients" => has_coeff ? length(coeffs) : 0,
     )
 end
 
