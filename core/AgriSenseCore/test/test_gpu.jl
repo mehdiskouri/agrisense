@@ -826,4 +826,74 @@ end
     end
 end
 
+# ============================================================================
+@testset "Adapt.adapt_structure on GPU" begin
+    using Adapt
+
+    @testset "Adapt.adapt_structure preserves GPU-resident graph" begin
+        # Build graph that's already GPU-resident
+        graph = make_gpu_test_graph()
+
+        # Adapted with identity (nothing) should preserve all GPU arrays
+        adapted = Adapt.adapt_structure(nothing, graph)
+
+        # CPU-only fields must remain plain types
+        @test adapted.farm_id isa String
+        @test adapted.farm_id == graph.farm_id
+        @test adapted.vertex_index isa Dict{String,Int}
+        @test adapted.n_vertices == graph.n_vertices
+
+        # Each layer's GPU arrays should still be CuArrays
+        for (name, lyr) in adapted.layers
+            orig = graph.layers[name]
+            @test lyr.vertex_features isa CuArray{Float32, 2}
+            @test lyr.feature_history isa CuArray{Float32, 3}
+            @test lyr.incidence isa CuSparseMatrixCSR{Float32, Int32}
+            # CPU-passthrough fields inside layers
+            @test lyr.vertex_ids isa Vector{String}
+            @test lyr.edge_ids isa Vector{String}
+            @test lyr.edge_metadata isa Vector{Dict{String,Any}}
+            # Data preserved
+            @test ensure_cpu(lyr.vertex_features) ≈ ensure_cpu(orig.vertex_features)
+        end
+    end
+
+    @testset "Adapt.adapt_structure(nothing, gpu_graph) → to_cpu round-trip" begin
+        graph = make_gpu_test_graph()
+
+        # Set known values
+        for v in 1:graph.n_vertices
+            graph.layers[:soil].vertex_features[v, 1] = Float32(v) * 0.1f0
+        end
+
+        adapted = Adapt.adapt_structure(nothing, graph)
+        cpu_back = to_cpu(adapted)
+
+        @test cpu_back.farm_id == graph.farm_id
+        @test cpu_back.n_vertices == graph.n_vertices
+        for (name, lyr) in cpu_back.layers
+            orig = graph.layers[name]
+            @test ensure_cpu(lyr.vertex_features) ≈ ensure_cpu(orig.vertex_features)
+            B1 = ensure_cpu(lyr.incidence)
+            B2 = ensure_cpu(orig.incidence)
+            @test B1 ≈ B2
+            @test lyr.vertex_ids == orig.vertex_ids
+            @test lyr.edge_ids == orig.edge_ids
+        end
+    end
+
+    @testset "Config types default Adapt passthrough on GPU" begin
+        # After removing @adapt_structure, these should be identity under any adaptor
+        zc = ZoneConfig("z1", "Zone 1", :greenhouse, 100.0, "loam")
+        mc = ModelConfig(true, true, true, true)
+        fp = FarmProfile("farm-gpu", :greenhouse, Set([:soil, :irrigation]),
+                          [zc], mc)
+
+        # Default Adapt.adapt with nothing returns identical objects
+        @test Adapt.adapt(nothing, zc) === zc
+        @test Adapt.adapt(nothing, mc) === mc
+        @test Adapt.adapt(nothing, fp) === fp
+    end
+end
+
 end  # if HAS_CUDA

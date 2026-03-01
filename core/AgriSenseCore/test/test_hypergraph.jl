@@ -1,6 +1,7 @@
 using Test
 using AgriSenseCore
 using SparseArrays
+using Adapt
 
 # Helper: build a standard test config used across many test sets
 function make_test_config(;
@@ -307,5 +308,68 @@ end
         backend = get_backend()
         # Just verify it returns something callable — type depends on CUDA availability
         @test backend isa Any
+    end
+end
+
+# ---------------------------------------------------------------------------
+@testset "Adapt.adapt_structure safety (CPU)" begin
+
+    @testset "Adapt.adapt_structure on LayeredHyperGraph is no-op on CPU" begin
+        config = make_test_config()
+        profile = FarmProfile(config)
+        graph = build_hypergraph(profile, config["vertices"], config["edges"])
+
+        # CPU adapt with `nothing` backend (identity transform)
+        adapted = Adapt.adapt_structure(nothing, graph)
+
+        @test adapted.farm_id == graph.farm_id
+        @test adapted.n_vertices == graph.n_vertices
+        @test adapted.vertex_index == graph.vertex_index
+        @test Set(keys(adapted.layers)) == Set(keys(graph.layers))
+
+        for (name, lyr) in adapted.layers
+            orig = graph.layers[name]
+            @test Array(lyr.incidence) == Array(orig.incidence)
+            @test lyr.vertex_features == orig.vertex_features
+            @test lyr.feature_history == orig.feature_history
+            @test lyr.vertex_ids == orig.vertex_ids
+            @test lyr.edge_ids == orig.edge_ids
+            @test lyr.feature_history_mask == orig.feature_history_mask
+            @test lyr.vertex_features_mask == orig.vertex_features_mask
+        end
+    end
+
+    @testset "Config types have no broken @adapt_structure (default passthrough)" begin
+        zc = ZoneConfig("z1", "Zone 1", :greenhouse, 100.0, "loam")
+        mc = ModelConfig(true, true, true, true)
+        fp = FarmProfile("farm-1", :greenhouse, Set([:soil, :irrigation]),
+                          [zc], mc)
+
+        # The default Adapt fallback for non-adapted structs returns the object as-is.
+        # This verifies we removed the broken @adapt_structure macros.
+        @test Adapt.adapt(nothing, zc) === zc
+        @test Adapt.adapt(nothing, mc) === mc
+        @test Adapt.adapt(nothing, fp) === fp
+    end
+
+    @testset "LayeredHyperGraph adapt preserves data after round-trip" begin
+        config = make_test_config(layers=["soil", "irrigation", "weather", "npk"])
+        profile = FarmProfile(config)
+        graph = to_cpu(build_hypergraph(profile, config["vertices"], config["edges"]))
+
+        # Populate some features so we can verify preservation
+        for (_, lyr) in graph.layers
+            lyr.vertex_features .= rand(Float32, size(lyr.vertex_features))
+        end
+
+        adapted = Adapt.adapt_structure(nothing, graph)
+        cpu_back = to_cpu(adapted)
+
+        @test cpu_back.farm_id == graph.farm_id
+        @test cpu_back.n_vertices == graph.n_vertices
+        for (name, lyr) in cpu_back.layers
+            orig = graph.layers[name]
+            @test ensure_cpu(lyr.vertex_features) ≈ ensure_cpu(orig.vertex_features)
+        end
     end
 end

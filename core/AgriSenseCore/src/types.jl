@@ -13,7 +13,8 @@ struct ZoneConfig
     soil_type::String
 end
 
-Adapt.@adapt_structure ZoneConfig
+# NOTE: No Adapt.@adapt_structure — ZoneConfig is a CPU-only config object
+# consumed during build_hypergraph and never stored on the graph.
 
 """
 Configuration for which predictive models to run on a farm.
@@ -25,7 +26,7 @@ struct ModelConfig
     anomaly_detection::Bool
 end
 
-Adapt.@adapt_structure ModelConfig
+# NOTE: No Adapt.@adapt_structure — ModelConfig is CPU-only.
 
 """
 Farm-level profile that determines active topology and behaviour.
@@ -38,7 +39,9 @@ struct FarmProfile
     models::ModelConfig
 end
 
-Adapt.@adapt_structure FarmProfile
+# NOTE: No Adapt.@adapt_structure — FarmProfile contains Set{Symbol} and
+# String fields that cannot be GPU-transferred.  FarmProfile is a transient
+# config object consumed during build_hypergraph then discarded.
 
 # ---------------------------------------------------------------------------
 # Hypergraph layer — sparse incidence matrix + feature matrices + ring buffer
@@ -277,7 +280,21 @@ mutable struct LayeredHyperGraph
     layers::Dict{Symbol, HyperGraphLayer}
 end
 
-Adapt.@adapt_structure LayeredHyperGraph
+# Custom Adapt rule — keep cpu-only fields (farm_id, vertex_index) on CPU,
+# delegate each HyperGraphLayer to its own custom Adapt.adapt_structure.
+# This makes `Adapt.adapt(backend, graph)` a safe alternative to `to_gpu`.
+function Adapt.adapt_structure(to, graph::LayeredHyperGraph)
+    adapted_layers = Dict{Symbol, HyperGraphLayer}(
+        name => Adapt.adapt_structure(to, layer)
+        for (name, layer) in graph.layers
+    )
+    return LayeredHyperGraph(
+        graph.farm_id,       # String — stays on CPU
+        graph.n_vertices,    # Int — scalar
+        graph.vertex_index,  # Dict{String,Int} — stays on CPU
+        adapted_layers,
+    )
+end
 
 # ---------------------------------------------------------------------------
 # Constructors from plain Dict (coming from Python bridge)
