@@ -14,6 +14,8 @@ function generate_vision_data(n_cameras::Int, n_beds::Int, n_steps::Int;
                                seed::Int=42,
                                use_gpu::Bool=HAS_CUDA,
                                dropout_rate::Float32=SYNTHETIC_DROPOUT_RATE,
+                               outage_prob::Float32=DEFAULT_OUTAGE_PROB,
+                               outage_duration_range::Tuple{Int,Int}=DEFAULT_OUTAGE_DURATION_RANGE,
                                )::Dict{String,Any}
     n_cameras <= 0 && error("generate_vision_data: n_cameras must be > 0")
     n_beds <= 0 && error("generate_vision_data: n_beds must be > 0")
@@ -65,10 +67,12 @@ function generate_vision_data(n_cameras::Int, n_beds::Int, n_steps::Int;
     confidence[disease] .= 0.70f0 .+ 0.25f0 .* rand(rng, Float32, count(disease))
     confidence = clamp.(confidence, 0.0f0, 1.0f0)
 
-    canopy_nan, mask = apply_dropout_with_mask(Float32.(canopy);
-                                               rate=dropout_rate,
-                                               seed=seed + 402,
-                                               use_gpu=use_gpu)
+    canopy_nan, mask, outage_events, outage_mask = apply_dropout_with_mask(Float32.(canopy);
+                                                     rate=dropout_rate,
+                                                     seed=seed + 402,
+                                                     use_gpu=use_gpu,
+                                                     outage_prob=outage_prob,
+                                                     outage_duration_range=outage_duration_range)
     conf_backend = to_backend(Float32.(confidence); use_gpu=use_gpu)
     conf_nan = ifelse.(mask, Float32(NaN), conf_backend)
 
@@ -87,5 +91,7 @@ function generate_vision_data(n_cameras::Int, n_beds::Int, n_steps::Int;
         "confidence" => cpu_plain(conf_nan),
         "canopy_coverage_pct" => cpu_plain(canopy_nan),
         "missing_mask" => BitMatrix(cpu_plain(mask)),
+        "outage_events" => [Dict("channel"=>e.channel, "start"=>e.start, "duration"=>e.duration) for e in outage_events],
+        "outage_mask" => BitMatrix(cpu_plain(outage_mask)),
     )
 end

@@ -14,6 +14,8 @@ function generate_weather_data(n_stations::Int, n_steps::Int;
                                 use_gpu::Bool=HAS_CUDA,
                                 dropout_rate::Float32=SYNTHETIC_DROPOUT_RATE,
                                 cadence_minutes::Int=CADENCE_MINUTES,
+                                outage_prob::Float32=DEFAULT_OUTAGE_PROB,
+                                outage_duration_range::Tuple{Int,Int}=DEFAULT_OUTAGE_DURATION_RANGE,
                                 )::Dict{String,Any}
     n_stations <= 0 && error("generate_weather_data: n_stations must be > 0")
     n_steps <= 0 && error("generate_weather_data: n_steps must be > 0")
@@ -59,10 +61,12 @@ function generate_weather_data(n_stations::Int, n_steps::Int;
     et0 = max.(0.0f0,
                0.0023f0 .* (temperature .+ 17.8f0) .* sqrt.(max.(temperature, 0.0f0)) .* solar_rad)
 
-    temperature_nan, mask = apply_dropout_with_mask(Float32.(temperature);
-                                                    rate=dropout_rate,
-                                                    seed=seed + 207,
-                                                    use_gpu=use_gpu)
+    temperature_nan, mask, outage_events, outage_mask = apply_dropout_with_mask(Float32.(temperature);
+                                                          rate=dropout_rate,
+                                                          seed=seed + 207,
+                                                          use_gpu=use_gpu,
+                                                          outage_prob=outage_prob,
+                                                          outage_duration_range=outage_duration_range)
     humidity_nan = ifelse.(mask, Float32(NaN), Float32.(humidity))
     precipitation_nan = ifelse.(mask, Float32(NaN), Float32.(precipitation))
     wind_speed_nan = ifelse.(mask, Float32(NaN), Float32.(wind_speed))
@@ -85,5 +89,7 @@ function generate_weather_data(n_stations::Int, n_steps::Int;
         "et0" => cpu_plain(et0_nan),
         "solar_rad" => cpu_plain(solar_rad_nan),
         "missing_mask" => BitMatrix(cpu_plain(mask)),
+        "outage_events" => [Dict("channel"=>e.channel, "start"=>e.start, "duration"=>e.duration) for e in outage_events],
+        "outage_mask" => BitMatrix(cpu_plain(outage_mask)),
     )
 end

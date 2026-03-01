@@ -117,4 +117,13 @@ export severity_to_urgency, suggest_amendment
 export SOIL_DEPTH_MM
 export CADENCE_MINUTES, compute_derived_features
 
+# Contiguous outage injection (synthetic pipeline)
+export apply_contiguous_outage!, apply_contiguous_outage_cpu!
+export outage_stamp_kernel!
+export DEFAULT_OUTAGE_PROB, DEFAULT_OUTAGE_DURATION_RANGE, OUTAGE_EVENT_FIELDS
+
+# Anomaly outage classification
+export nan_run_kernel!, MIN_NAN_RUN_FOR_OUTAGE, OUTAGE_ANOMALY_TYPE
+export count_nan_run
+
 end # module AgriSenseCore

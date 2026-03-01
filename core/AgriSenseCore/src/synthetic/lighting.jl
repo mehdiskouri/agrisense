@@ -13,6 +13,8 @@ function generate_lighting_data(n_sensors::Int, n_steps::Int;
                                  use_gpu::Bool=HAS_CUDA,
                                  dropout_rate::Float32=SYNTHETIC_DROPOUT_RATE,
                                  cadence_minutes::Int=CADENCE_MINUTES,
+                                 outage_prob::Float32=DEFAULT_OUTAGE_PROB,
+                                 outage_duration_range::Tuple{Int,Int}=DEFAULT_OUTAGE_DURATION_RANGE,
                                  )::Dict{String,Any}
     n_sensors <= 0 && error("generate_lighting_data: n_sensors must be > 0")
     n_steps <= 0 && error("generate_lighting_data: n_steps must be > 0")
@@ -39,10 +41,12 @@ function generate_lighting_data(n_sensors::Int, n_steps::Int;
                           0.03f0 .* correlated_noise(n_steps, n_sensors; seed=seed + 502, use_gpu=use_gpu),
                           0.0f0, 1.0f0)
 
-    par_nan, mask = apply_dropout_with_mask(Float32.(par);
-                                            rate=dropout_rate,
-                                            seed=seed + 503,
-                                            use_gpu=use_gpu)
+    par_nan, mask, outage_events, outage_mask = apply_dropout_with_mask(Float32.(par);
+                                                  rate=dropout_rate,
+                                                  seed=seed + 503,
+                                                  use_gpu=use_gpu,
+                                                  outage_prob=outage_prob,
+                                                  outage_duration_range=outage_duration_range)
     dli_nan = ifelse.(mask, Float32(NaN), Float32.(dli))
     duty_nan = ifelse.(mask, Float32(NaN), Float32.(duty))
     spectrum_nan = ifelse.(mask, Float32(NaN), Float32.(spectrum_idx))
@@ -57,5 +61,7 @@ function generate_lighting_data(n_sensors::Int, n_steps::Int;
         "duty_cycle_pct" => cpu_plain(duty_nan),
         "spectrum_index" => cpu_plain(spectrum_nan),
         "missing_mask" => BitMatrix(cpu_plain(mask)),
+        "outage_events" => [Dict("channel"=>e.channel, "start"=>e.start, "duration"=>e.duration) for e in outage_events],
+        "outage_mask" => BitMatrix(cpu_plain(outage_mask)),
     )
 end

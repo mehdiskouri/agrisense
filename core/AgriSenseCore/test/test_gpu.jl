@@ -567,4 +567,101 @@ end
     end
 end
 
+# ============================================================================
+@testset "GPU Outage Injection & Classification" begin
+
+    @testset "outage_stamp_kernel! stamps correct positions on GPU" begin
+        n_steps, n_channels = 100, 4
+        mask_gpu = CuArray(fill(false, n_steps, n_channels))
+        vals_gpu = CUDA.ones(Float32, n_steps, n_channels)
+
+        # Known outage events: ch=1 start=10 dur=5, ch=3 start=50 dur=8
+        channels = CuArray(Int32[1, 3])
+        starts   = CuArray(Int32[10, 50])
+        durations = CuArray(Int32[5, 8])
+
+        launch_kernel!(outage_stamp_kernel!, CUDABackend(), 2,
+                       mask_gpu, vals_gpu, channels, starts, durations, Int32(n_steps))
+
+        mask_cpu = ensure_cpu(mask_gpu)
+        vals_cpu = ensure_cpu(vals_gpu)
+
+        # Verify ch=1, positions 10:14 stamped
+        @test all(mask_cpu[10:14, 1])
+        @test all(isnan.(vals_cpu[10:14, 1]))
+        @test !mask_cpu[9, 1]
+        @test !mask_cpu[15, 1]
+
+        # Verify ch=3, positions 50:57 stamped
+        @test all(mask_cpu[50:57, 3])
+        @test all(isnan.(vals_cpu[50:57, 3]))
+        @test !mask_cpu[49, 3]
+        @test !mask_cpu[58, 3]
+
+        # Unstamped channels untouched
+        @test !any(mask_cpu[:, 2])
+        @test !any(mask_cpu[:, 4])
+    end
+
+    @testset "nan_run_kernel! runs on GPU and matches CPU helper" begin
+        graph = make_gpu_test_graph()
+        layer = graph.layers[:soil]
+        nv = graph.n_vertices
+        d = size(ensure_cpu(layer.vertex_features), 2)
+
+        # Push 10 stable readings for all vertices (10*6=60 < buf_size=96)
+        for t in 1:10
+            for v in 1:nv
+                push_features!(layer, v, Float32[0.25, 22.0, 1.0, 6.5])
+            end
+        end
+
+        # Push 6 NaN readings for vertex 1 only (total = 66 < 96)
+        for _ in 1:6
+            push_features!(layer, 1, fill(Float32(NaN), d))
+        end
+
+        # Verify current state
+        @test layer.history_length == 66
+        vf_cpu = ensure_cpu(layer.vertex_features)
+        @test all(isnan.(vf_cpu[1, :]))  # v1 should be NaN from last push
+
+        # Run CPU helper on a CPU copy
+        cpu_graph = to_cpu(graph)
+        cpu_layer = cpu_graph.layers[:soil]
+        cpu_runs = count_nan_run(cpu_layer, 1)
+        @test all(cpu_runs .== 6)  # 1 current + 5 history
+
+        # Run GPU kernel directly
+        backend = array_backend(layer.vertex_features)
+        ndrange = nv * d
+        buf_size = Int32(size(layer.feature_history, 3))
+        head_val = Int32(mod1(layer.history_length, buf_size))
+        head_arr = CuArray(Int32[head_val])
+        valid_len_arr = CuArray(Int32[layer.history_length])
+        nan_runs_gpu = CUDA.zeros(Int32, nv, d)
+
+        launch_kernel!(nan_run_kernel!, backend, ndrange,
+                       nan_runs_gpu, layer.vertex_features, layer.feature_history,
+                       head_arr, valid_len_arr, buf_size, Int32(d))
+
+        nan_runs_cpu = ensure_cpu(nan_runs_gpu)
+        @test all(nan_runs_cpu[1, :] .== 6)
+    end
+
+    @testset "GPU outage injection produces same events as CPU" begin
+        cpu = AgriSenseCore.generate_soil_data(6, 96 * 5;
+                    seed=77, use_gpu=false, outage_prob=0.05f0)
+        gpu = AgriSenseCore.generate_soil_data(6, 96 * 5;
+                    seed=77, use_gpu=true, outage_prob=0.05f0)
+
+        # Events are sampled on CPU in both paths, so they must be identical
+        @test cpu["outage_events"] == gpu["outage_events"]
+        # Outage masks must match (stamp positions are deterministic)
+        @test cpu["outage_mask"] == gpu["outage_mask"]
+        # Shapes must match
+        @test size(cpu["moisture"]) == size(gpu["moisture"])
+    end
+end
+
 end  # if HAS_CUDA

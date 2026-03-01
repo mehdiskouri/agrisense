@@ -114,10 +114,40 @@ end
     end
 end
 
+@kernel function nan_run_kernel!(nan_runs, current, history, head_arr, valid_len_arr, buf_size, d)
+    i = @index(Global)
+    @inbounds begin
+        v = div(i - 1, d) + 1
+        f = mod(i - 1, d) + 1
+        head = Int32(head_arr[1])
+        valid_len = Int32(valid_len_arr[1])
+
+        run_len = Int32(0)
+        # Check current value (vertex_features) first — most recent reading
+        if isnan(current[v, f])
+            run_len = Int32(1)
+            # Walk history backwards from head-1 (cap at buf_size to avoid wrap)
+            max_k = min(valid_len, buf_size)
+            for k in 1:max_k
+                idx = mod1(head - k, buf_size)
+                val = history[v, f, idx]
+                if isnan(val)
+                    run_len += Int32(1)
+                else
+                    break
+                end
+            end
+        end
+        nan_runs[v, f] = run_len
+    end
+end
+
 # ---------------------------------------------------------------------------
 # Minimum history required for Western Electric rules
 # ---------------------------------------------------------------------------
 const MIN_HISTORY_FOR_ANOMALY = 8
+const MIN_NAN_RUN_FOR_OUTAGE = 4
+const OUTAGE_ANOMALY_TYPE = "sensor_outage"
 
 """
     anomaly_type_from_layer(layer_sym::Symbol) -> String
@@ -135,6 +165,41 @@ function anomaly_type_from_layer(layer_sym::Symbol)::String
 end
 
 """
+    count_nan_run(layer::HyperGraphLayer, vertex_idx::Int) -> Vector{Int}
+
+CPU helper: count consecutive NaN values from most recent slot backwards
+in the ring buffer for each feature of the given vertex. Returns a vector
+of length d (number of features). Mirrors `nan_run_kernel!` logic exactly.
+"""
+function count_nan_run(layer::HyperGraphLayer, vertex_idx::Int)::Vector{Int}
+    d = size(layer.vertex_features, 2)
+    buf_size = size(layer.feature_history, 3)
+    head = mod1(layer.history_length, buf_size)
+    valid_len = layer.history_length
+    history_cpu = ensure_cpu(layer.feature_history)
+    vf_cpu = ensure_cpu(layer.vertex_features)
+
+    runs = zeros(Int, d)
+    for f in 1:d
+        # Check current value first (vertex_features)
+        if !isnan(vf_cpu[vertex_idx, f])
+            continue  # Current is valid — no NaN run
+        end
+        runs[f] = 1  # Current is NaN
+        # Walk history backwards (cap at buf_size to avoid wrap)
+        for k in 1:min(valid_len, buf_size)
+            idx = mod1(head - k, buf_size)
+            if isnan(history_cpu[vertex_idx, f, idx])
+                runs[f] += 1
+            else
+                break
+            end
+        end
+    end
+    return runs
+end
+
+"""
     compute_anomaly_detection(graph::LayeredHyperGraph) -> Vector{Dict}
 
 Detect anomalies using rolling mean/σ and Western Electric rules on sensor streams.
@@ -147,6 +212,7 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
     # Track which vertices have anomalies per layer for cross-layer correlation
     soil_anomaly_vertices = Set{Int}()
     vision_anomaly_vertices = Set{Int}()
+    outage_vertices = Dict{Symbol, Set{Int}}()
 
     # Feature names per layer
     feature_names = Dict{Symbol, Vector{String}}(
@@ -203,11 +269,19 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
                        layer.feature_history, head_arr, valid_len_arr, buf_size,
                        sigma1, sigma2, sigma3)
 
+        # NaN-run kernel (contiguous outage detection)
+        nan_runs = backend isa CPU ? zeros(Int32, nv, d) :
+                   (HAS_CUDA ? CUDA.zeros(Int32, nv, d) : zeros(Int32, nv, d))
+        launch_kernel!(nan_run_kernel!, backend, ndrange,
+                       nan_runs, current, layer.feature_history, head_arr, valid_len_arr,
+                       buf_size, Int32(d))
+
         # Pull results to CPU for Dict building
-        flags_cpu   = ensure_cpu(flags)
-        means_cpu   = ensure_cpu(means)
-        stds_cpu    = ensure_cpu(stds)
-        current_cpu = ensure_cpu(current)
+        flags_cpu    = ensure_cpu(flags)
+        means_cpu    = ensure_cpu(means)
+        stds_cpu     = ensure_cpu(stds)
+        current_cpu  = ensure_cpu(current)
+        nan_runs_cpu = ensure_cpu(nan_runs)
 
         # Collect flagged anomalies
         fnames = get(feature_names, layer_sym, ["feature_$i" for i in 1:d])
@@ -272,6 +346,41 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
                 end
             end
         end
+
+        # --- Contiguous outage detection (NaN-run based) ---
+        layer_outage_vertices = Set{Int}()
+        for v in 1:nv, f in 1:d
+            nan_runs_cpu[v, f] < MIN_NAN_RUN_FOR_OUTAGE && continue
+
+            vid = v <= length(layer.vertex_ids) ? layer.vertex_ids[v] : "v_$v"
+            fname = f <= length(fnames) ? fnames[f] : "feature_$f"
+            run_len = Int(nan_runs_cpu[v, f])
+            severity = run_len >= 2 * MIN_NAN_RUN_FOR_OUTAGE ? "alarm" : "warning"
+
+            sigma_dev = stds_cpu[v, f] > 1.0f-8 ?
+                        abs(current_cpu[v, f] - means_cpu[v, f]) / stds_cpu[v, f] : 0.0f0
+
+            push!(layer_outage_vertices, v)
+            push!(results, Dict{String,Any}(
+                "vertex_id" => vid,
+                "layer" => string(layer_sym),
+                "feature" => fname,
+                "anomaly_type" => OUTAGE_ANOMALY_TYPE,
+                "severity" => severity,
+                "current_value" => Float64(current_cpu[v, f]),
+                "rolling_mean" => Float64(means_cpu[v, f]),
+                "rolling_std" => Float64(stds_cpu[v, f]),
+                "sigma_deviation" => Float64(sigma_dev),
+                "anomaly_rules" => ["contiguous_nan_run"],
+                "nan_run_length" => run_len,
+                "estimated_outage_minutes" => run_len * CADENCE_MINUTES,
+                "timestamp_start" => string(ts_start),
+                "timestamp_end" => string(ts_end),
+                "cross_layer_confirmed" => false,
+                "multi_layer_outage" => false,
+            ))
+        end
+        outage_vertices[layer_sym] = layer_outage_vertices
     end
 
     # Cross-layer correlation: soil + vision anomaly on same vertex → escalate
@@ -286,6 +395,22 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
                 # Escalate warnings to alarms
                 if r["severity"] == "warning"
                     r["severity"] = "alarm"
+                end
+            end
+        end
+    end
+
+    # Multi-layer outage correlation
+    if !isempty(outage_vertices)
+        all_outage_verts = reduce(∪, values(outage_vertices); init=Set{Int}())
+        for v in all_outage_verts
+            layers_with_outage = [sym for (sym, s) in outage_vertices if v in s]
+            if length(layers_with_outage) >= 2
+                for r in results
+                    vidx = get(graph.vertex_index, r["vertex_id"], 0)
+                    if vidx == v && get(r, "anomaly_type", "") == OUTAGE_ANOMALY_TYPE
+                        r["multi_layer_outage"] = true
+                    end
                 end
             end
         end

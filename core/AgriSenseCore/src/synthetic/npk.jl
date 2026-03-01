@@ -11,6 +11,8 @@ function generate_npk_data(n_zones::Int, n_weeks::Int;
                             seed::Int=42,
                             use_gpu::Bool=HAS_CUDA,
                             dropout_rate::Float32=0.01f0,
+                            outage_prob::Float32=DEFAULT_OUTAGE_PROB,
+                            outage_duration_range::Tuple{Int,Int}=(1, 4),
                             )::Dict{String,Any}
     n_zones <= 0 && error("generate_npk_data: n_zones must be > 0")
     n_weeks <= 0 && error("generate_npk_data: n_weeks must be > 0")
@@ -44,10 +46,12 @@ function generate_npk_data(n_zones::Int, n_weeks::Int;
     potassium = clamp.(potassium, 2.0f0, 220.0f0)
     organic_matter = clamp.(organic_matter, 0.5f0, 12.0f0)
 
-    n_nan, mask = apply_dropout_with_mask(Float32.(nitrogen);
-                                          rate=dropout_rate,
-                                          seed=seed + 303,
-                                          use_gpu=use_gpu)
+    n_nan, mask, outage_events, outage_mask = apply_dropout_with_mask(Float32.(nitrogen);
+                                                rate=dropout_rate,
+                                                seed=seed + 303,
+                                                use_gpu=use_gpu,
+                                                outage_prob=outage_prob,
+                                                outage_duration_range=outage_duration_range)
     p_nan = ifelse.(mask, Float32(NaN), Float32.(phosphorus))
     k_nan = ifelse.(mask, Float32(NaN), Float32.(potassium))
     om_nan = ifelse.(mask, Float32(NaN), Float32.(organic_matter))
@@ -61,5 +65,7 @@ function generate_npk_data(n_zones::Int, n_weeks::Int;
         "potassium_mg_kg" => cpu_plain(k_nan),
         "organic_matter_pct" => cpu_plain(om_nan),
         "missing_mask" => BitMatrix(cpu_plain(mask)),
+        "outage_events" => [Dict("channel"=>e.channel, "start"=>e.start, "duration"=>e.duration) for e in outage_events],
+        "outage_mask" => BitMatrix(cpu_plain(outage_mask)),
     )
 end

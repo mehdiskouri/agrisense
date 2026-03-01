@@ -7,7 +7,10 @@
 
 Generate a complete synthetic dataset for a demo farm.
 """
-function generate(farm_type::Symbol, days::Int, seed::Int)::Dict{String,Any}
+function generate(farm_type::Symbol, days::Int, seed::Int;
+                  outage_prob::Float32=DEFAULT_OUTAGE_PROB,
+                  outage_duration_range::Tuple{Int,Int}=DEFAULT_OUTAGE_DURATION_RANGE,
+                  )::Dict{String,Any}
     days <= 0 && error("generate: days must be > 0")
     farm_type in (:open_field, :greenhouse, :hybrid) ||
         error("generate: farm_type must be :open_field, :greenhouse, or :hybrid")
@@ -45,7 +48,9 @@ function generate(farm_type::Symbol, days::Int, seed::Int)::Dict{String,Any}
                                     seed=seed + 10,
                                     use_gpu=use_gpu,
                                     dropout_rate=SYNTHETIC_DROPOUT_RATE,
-                                    cadence_minutes=CADENCE_MINUTES)
+                                    cadence_minutes=CADENCE_MINUTES,
+                                    outage_prob=outage_prob,
+                                    outage_duration_range=outage_duration_range)
     rain_global = vec(Float32.(mean(weather["precipitation_mm"]; dims=2)))
     rain_global = Float32.(ifelse.(isnan.(rain_global), 0.0f0, rain_global))
 
@@ -59,39 +64,51 @@ function generate(farm_type::Symbol, days::Int, seed::Int)::Dict{String,Any}
                               rainfall_mm=rain_global,
                               irrigation_mm=irrigation_global,
                               dropout_rate=SYNTHETIC_DROPOUT_RATE,
-                              cadence_minutes=CADENCE_MINUTES)
+                              cadence_minutes=CADENCE_MINUTES,
+                              outage_prob=outage_prob,
+                              outage_duration_range=outage_duration_range)
 
     npk = generate_npk_data(n_zones, n_weeks;
                             seed=seed + 30,
                             use_gpu=use_gpu,
-                            dropout_rate=0.01f0)
+                            dropout_rate=0.01f0,
+                            outage_prob=outage_prob,
+                            outage_duration_range=(1, 4))
 
     lighting = n_lighting > 0 ?
         generate_lighting_data(n_lighting, n_steps;
                                seed=seed + 40,
                                use_gpu=use_gpu,
                                dropout_rate=SYNTHETIC_DROPOUT_RATE,
-                               cadence_minutes=CADENCE_MINUTES) :
+                               cadence_minutes=CADENCE_MINUTES,
+                               outage_prob=outage_prob,
+                               outage_duration_range=outage_duration_range) :
         Dict{String,Any}("layer" => "lighting", "n_sensors" => 0, "n_steps" => n_steps,
                          "par_umol" => zeros(Float32, n_steps, 0),
                          "dli_cumulative" => zeros(Float32, n_steps, 0),
                          "duty_cycle_pct" => zeros(Float32, n_steps, 0),
                          "spectrum_index" => zeros(Float32, n_steps, 0),
                          "missing_mask" => falses(n_steps, 0),
+                         "outage_events" => Dict{String,Any}[],
+                         "outage_mask" => falses(n_steps, 0),
                          "cadence_minutes" => CADENCE_MINUTES)
 
     vision = n_lighting > 0 ?
         generate_vision_data(n_cameras, n_beds, n_steps;
                              seed=seed + 50,
                              use_gpu=use_gpu,
-                             dropout_rate=SYNTHETIC_DROPOUT_RATE) :
+                             dropout_rate=SYNTHETIC_DROPOUT_RATE,
+                             outage_prob=outage_prob,
+                             outage_duration_range=outage_duration_range) :
         Dict{String,Any}("layer" => "vision", "n_cameras" => 0, "n_beds" => 0, "n_steps" => n_steps,
                          "camera_for_bed" => Int32[],
                          "anomaly_code" => zeros(Int8, n_steps, 0),
                          "anomaly_legend" => Dict("-1" => "missing", "0" => "none", "1" => "pest", "2" => "disease"),
                          "confidence" => zeros(Float32, n_steps, 0),
                          "canopy_coverage_pct" => zeros(Float32, n_steps, 0),
-                         "missing_mask" => falses(n_steps, 0))
+                         "missing_mask" => falses(n_steps, 0),
+                         "outage_events" => Dict{String,Any}[],
+                         "outage_mask" => falses(n_steps, 0))
 
     # StructArrays SoA batches for sensor metadata layout
     soil_sensor_batch = StructArray((
@@ -128,7 +145,11 @@ function generate(farm_type::Symbol, days::Int, seed::Int)::Dict{String,Any}
         "cadence_minutes" => CADENCE_MINUTES,
         "n_steps" => n_steps,
         "time_hours" => Vector{Float32}(t_hours),
-        "missingness" => Dict("encoding" => "nan_plus_bitmask", "dropout_rate" => SYNTHETIC_DROPOUT_RATE),
+        "missingness" => Dict("encoding" => "nan_plus_bitmask",
+                                "dropout_rate" => SYNTHETIC_DROPOUT_RATE,
+                                "outage_prob" => Float64(outage_prob),
+                                "outage_duration_range" => [outage_duration_range...],
+                                "outage_encoding" => "contiguous_nan_blocks_in_outage_mask"),
         "reproducibility" => Dict("cpu" => "bitwise_deterministic", "gpu" => "statistically_bounded"),
         "topology" => topology,
         "layers" => Dict{String,Any}(

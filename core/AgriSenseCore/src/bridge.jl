@@ -136,8 +136,10 @@ end
 """
 function generate_synthetic(; farm_type::String="greenhouse",
                               days::Int=90,
-                              seed::Int=42)::Dict{String,Any}
-    return generate(Symbol(farm_type), days, seed)
+                              seed::Int=42,
+                              outage_prob::Float64=Float64(DEFAULT_OUTAGE_PROB))::Dict{String,Any}
+    return generate(Symbol(farm_type), days, seed;
+                    outage_prob=Float32(outage_prob))
 end
 
 # ---------------------------------------------------------------------------

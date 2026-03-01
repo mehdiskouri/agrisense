@@ -21,6 +21,8 @@ function generate_soil_data(n_sensors::Int, n_steps::Int;
                              rainfall_mm::Union{Nothing,AbstractVector{Float32}}=nothing,
                              irrigation_mm::Union{Nothing,AbstractVector{Float32}}=nothing,
                              cadence_minutes::Int=CADENCE_MINUTES,
+                             outage_prob::Float32=DEFAULT_OUTAGE_PROB,
+                             outage_duration_range::Tuple{Int,Int}=DEFAULT_OUTAGE_DURATION_RANGE,
                              )::Dict{String,Any}
     n_sensors <= 0 && error("generate_soil_data: n_sensors must be > 0")
     n_steps <= 0 && error("generate_soil_data: n_steps must be > 0")
@@ -89,10 +91,12 @@ function generate_soil_data(n_sensors::Int, n_steps::Int;
     ph = clamp.(ph, 4.5f0, 8.5f0)
 
     # Shared missingness mask across all soil channels (sensor dropout)
-    moisture_nan, mask = apply_dropout_with_mask(Float32.(moisture);
-                                                 rate=dropout_rate,
-                                                 seed=seed + 107,
-                                                 use_gpu=use_gpu)
+    moisture_nan, mask, outage_events, outage_mask = apply_dropout_with_mask(Float32.(moisture);
+                                                       rate=dropout_rate,
+                                                       seed=seed + 107,
+                                                       use_gpu=use_gpu,
+                                                       outage_prob=outage_prob,
+                                                       outage_duration_range=outage_duration_range)
     temperature_nan = ifelse.(mask, Float32(NaN), Float32.(temperature))
     conductivity_nan = ifelse.(mask, Float32(NaN), Float32.(conductivity))
     ph_nan = ifelse.(mask, Float32(NaN), Float32.(ph))
@@ -107,6 +111,8 @@ function generate_soil_data(n_sensors::Int, n_steps::Int;
         "conductivity" => cpu_plain(conductivity_nan),
         "ph" => cpu_plain(ph_nan),
         "missing_mask" => BitMatrix(cpu_plain(mask)),
+        "outage_events" => [Dict("channel"=>e.channel, "start"=>e.start, "duration"=>e.duration) for e in outage_events],
+        "outage_mask" => BitMatrix(cpu_plain(outage_mask)),
         "rainfall_mm" => Vector{Float32}(rain),
         "irrigation_mm" => Vector{Float32}(irrig),
     )

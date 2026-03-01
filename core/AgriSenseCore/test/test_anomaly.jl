@@ -3,6 +3,8 @@ using AgriSenseCore
 using SparseArrays
 using Statistics
 
+using Random
+
 # Helper: build a graph with history for anomaly testing
 function make_anomaly_graph(; nv::Int=3, layers_list=["soil"],
                               buf_size::Int=DEFAULT_HISTORY_SIZE)
@@ -48,6 +50,7 @@ end
 @testset "Anomaly Detection" begin
 
     @testset "stable baseline produces no anomalies" begin
+        Random.seed!(54321)  # deterministic RNG for stable baseline
         graph = make_anomaly_graph(nv=1, layers_list=["soil"])
         # Push 30 stable readings for the single vertex
         push_stable_baseline!(graph.layers[:soil], 1, 30;
@@ -252,6 +255,167 @@ end
         if !isempty(moisture_results)
             rules = moisture_results[1]["anomaly_rules"]
             @test "8consec_same_side" in rules
+        end
+    end
+end
+
+# ===========================================================================
+# Section F — Contiguous Outage Classification Tests
+# ===========================================================================
+@testset "Contiguous Outage Classification" begin
+
+    @testset "contiguous NaN run detected as sensor_outage" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+        push_stable_baseline!(sol, 1, 20;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.01f0)
+        # Push 6 consecutive NaN readings (above MIN_NAN_RUN_FOR_OUTAGE=4)
+        for _ in 1:6
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        sol.vertex_features[1, :] .= Float32(NaN)
+
+        results = compute_anomaly_detection(graph)
+        outage_results = filter(r -> r["anomaly_type"] == "sensor_outage", results)
+        @test !isempty(outage_results)
+        @test any(r -> r["nan_run_length"] >= 6, outage_results)
+    end
+
+    @testset "short NaN run not classified as outage" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+        push_stable_baseline!(sol, 1, 20;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.01f0)
+        # Push only 2 NaN readings (below MIN_NAN_RUN_FOR_OUTAGE=4)
+        for _ in 1:2
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        sol.vertex_features[1, :] .= Float32(NaN)
+
+        results = compute_anomaly_detection(graph)
+        outage_results = filter(r -> r["anomaly_type"] == "sensor_outage", results)
+        @test isempty(outage_results)
+    end
+
+    @testset "outage severity escalation" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+        push_stable_baseline!(sol, 1, 20;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.01f0)
+        # Push 12 consecutive NaN readings (≥ 2 × MIN_NAN_RUN_FOR_OUTAGE)
+        for _ in 1:12
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        sol.vertex_features[1, :] .= Float32(NaN)
+
+        results = compute_anomaly_detection(graph)
+        outage_results = filter(r -> r["anomaly_type"] == "sensor_outage", results)
+        @test !isempty(outage_results)
+        @test any(r -> r["severity"] == "alarm", outage_results)
+    end
+
+    @testset "outage + statistical anomaly coexist in results" begin
+        # Use two separate layers: soil gets outage, weather gets WE alarm
+        graph = make_anomaly_graph(nv=1, layers_list=["soil", "weather"])
+        sol = graph.layers[:soil]
+        wth = graph.layers[:weather]
+        d_sol = size(sol.vertex_features, 2)
+        d_wth = size(wth.vertex_features, 2)
+
+        # Soil: push 20 stable then 5 NaN → outage
+        push_stable_baseline!(sol, 1, 20;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.005f0)
+        for _ in 1:5
+            push_features!(sol, 1, fill(Float32(NaN), d_sol))
+        end
+        sol.vertex_features[1, :] .= Float32(NaN)
+
+        # Weather: push 20 stable then set extreme outlier current → WE alarm
+        push_stable_baseline!(wth, 1, 20;
+                               baseline=Float32[22.0, 60.0, 0.0, 5.0, 15.0],
+                               noise_std=0.005f0)
+        wth.vertex_features[1, :] .= Float32[55.0, 60.0, 0.0, 5.0, 15.0]
+
+        results = compute_anomaly_detection(graph)
+        has_outage = any(r -> r["anomaly_type"] == "sensor_outage", results)
+        has_we = any(r -> r["anomaly_type"] != "sensor_outage", results)
+        @test has_outage
+        @test has_we
+    end
+
+    @testset "multi-layer outage detection" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil", "weather"])
+        sol = graph.layers[:soil]
+        wth = graph.layers[:weather]
+        d_sol = size(sol.vertex_features, 2)
+        d_wth = size(wth.vertex_features, 2)
+
+        # Push stable baseline for both layers
+        push_stable_baseline!(sol, 1, 20;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.01f0)
+        push_stable_baseline!(wth, 1, 20;
+                               baseline=Float32[22.0, 60.0, 0.0, 5.0, 15.0],
+                               noise_std=0.01f0)
+
+        # Push NaN runs for vertex 1 on BOTH layers
+        for _ in 1:6
+            push_features!(sol, 1, fill(Float32(NaN), d_sol))
+            push_features!(wth, 1, fill(Float32(NaN), d_wth))
+        end
+        sol.vertex_features[1, :] .= Float32(NaN)
+        wth.vertex_features[1, :] .= Float32(NaN)
+
+        results = compute_anomaly_detection(graph)
+        outage_v1 = filter(r -> r["anomaly_type"] == "sensor_outage" &&
+                                r["vertex_id"] == "v1", results)
+        @test !isempty(outage_v1)
+        @test any(r -> get(r, "multi_layer_outage", false) == true, outage_v1)
+    end
+
+    @testset "count_nan_run matches kernel output" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+
+        # Push 10 stable then 6 NaN
+        push_stable_baseline!(sol, 1, 10;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.01f0)
+        for _ in 1:6
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        # push_features! sets vertex_features to NaN on last push
+
+        runs = count_nan_run(sol, 1)
+        @test length(runs) == d
+        @test all(runs .== 6)  # 1 current + 5 history NaN
+    end
+
+    @testset "estimated_outage_minutes is correct" begin
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"])
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+        push_stable_baseline!(sol, 1, 20;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.01f0)
+        for _ in 1:8
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        sol.vertex_features[1, :] .= Float32(NaN)
+
+        results = compute_anomaly_detection(graph)
+        outage_results = filter(r -> r["anomaly_type"] == "sensor_outage", results)
+        @test !isempty(outage_results)
+        for r in outage_results
+            @test r["estimated_outage_minutes"] == r["nan_run_length"] * AgriSenseCore.CADENCE_MINUTES
         end
     end
 end
