@@ -636,7 +636,7 @@ end
         backend = array_backend(layer.vertex_features)
         ndrange = nv * d
         buf_size = Int32(size(layer.feature_history, 3))
-        head_val = Int32(mod1(layer.history_length, buf_size))
+        head_val = Int32(mod1(layer.history_head - 1, buf_size))
         head_arr = CuArray(Int32[head_val])
         valid_len_arr = CuArray(Int32[layer.history_length])
         nan_runs_gpu = CUDA.zeros(Int32, nv, d)
@@ -661,6 +661,46 @@ end
         @test cpu["outage_mask"] == gpu["outage_mask"]
         # Shapes must match
         @test size(cpu["moisture"]) == size(gpu["moisture"])
+    end
+end
+
+# ============================================================================
+@testset "GPU Anomaly Detection After Buffer Wrap" begin
+
+    @testset "GPU anomaly detection correct after buffer wrap" begin
+        graph = make_gpu_test_graph()
+        nv = graph.n_vertices
+        layer = graph.layers[:soil]
+        d = size(ensure_cpu(layer.vertex_features), 2)
+        buf_size = size(layer.feature_history, 3)  # DEFAULT_HISTORY_SIZE = 96
+
+        # Push exactly buf_size readings to fill the buffer
+        for t in 1:buf_size
+            for v in 1:nv
+                push_features!(layer, v, Float32[0.25 + 0.001*t, 22.0, 1.0, 6.5])
+            end
+        end
+        @test layer.history_length == buf_size
+
+        # Push 10 more to wrap the buffer
+        for t in 1:10
+            for v in 1:nv
+                push_features!(layer, v, Float32[0.25 + 0.001*(buf_size + t), 22.0, 1.0, 6.5])
+            end
+        end
+        @test layer.history_length == buf_size  # still capped
+        @test layer.history_head != 1            # has wrapped
+
+        # Inject a massive outlier on vertex 1
+        push_features!(layer, 1, Float32[0.99, 22.0, 1.0, 6.5])
+
+        results = compute_anomaly_detection(graph)
+        soil_v1 = filter(r -> r["layer"] == "soil" && r["vertex_id"] == "v1", results)
+        @test !isempty(soil_v1)
+        # Should fire 3σ alarm on moisture
+        moisture_v1 = filter(r -> r["feature"] == "moisture", soil_v1)
+        @test !isempty(moisture_v1)
+        @test any(r -> r["severity"] == "alarm", moisture_v1)
     end
 end
 

@@ -32,6 +32,18 @@ function make_anomaly_graph(; nv::Int=3, layers_list=["soil"],
     profile = FarmProfile(config)
     graph = build_hypergraph(profile, config["vertices"], config["edges"])
     graph = to_cpu(graph)  # tests validate correctness on CPU; GPU tested in test_gpu.jl
+
+    # Replace layers with custom buffer size when requested
+    if buf_size != DEFAULT_HISTORY_SIZE
+        for (sym, layer) in graph.layers
+            d = size(layer.vertex_features, 2)
+            new_fh = zeros(Float32, nv, d, buf_size)
+            graph.layers[sym] = HyperGraphLayer(
+                layer.incidence, layer.vertex_features, new_fh,
+                1, 0,  # reset head & length for fresh small buffer
+                layer.edge_metadata, layer.vertex_ids, layer.edge_ids)
+        end
+    end
     return graph
 end
 
@@ -416,6 +428,118 @@ end
         @test !isempty(outage_results)
         for r in outage_results
             @test r["estimated_outage_minutes"] == r["nan_run_length"] * AgriSenseCore.CADENCE_MINUTES
+        end
+    end
+end
+
+# ===========================================================================
+# Ring Buffer Full-Wrap Tests — validates off-by-one fix (Phase 12)
+# ===========================================================================
+@testset "Ring Buffer Full-Wrap Anomaly Detection" begin
+
+    @testset "Western Electric lookback correct after buffer wrap" begin
+        # Small buffer (buf_size=10) forces wrapping after 10 pushes
+        Random.seed!(99999)
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"], buf_size=10)
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+
+        # Push 10 stable readings (fills the buffer exactly)
+        push_stable_baseline!(sol, 1, 10;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.005f0)
+        @test sol.history_length == 10
+        @test size(sol.feature_history, 3) == 10
+
+        # Push 5 more stable readings (wraps: history_head ≠ history_length)
+        push_stable_baseline!(sol, 1, 5;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.005f0)
+        @test sol.history_length == 10  # capped at buf_size
+        @test sol.history_head != 1     # has wrapped
+
+        # Inject a massive 10σ outlier as current
+        sol.vertex_features[1, :] .= Float32[0.90, 25.0, 1.2, 6.5]
+
+        results = compute_anomaly_detection(graph)
+        @test !isempty(results)
+        # Should fire 3σ alarm on moisture
+        moisture_results = filter(r -> r["feature"] == "moisture", results)
+        @test !isempty(moisture_results)
+        alarms = filter(r -> r["severity"] == "alarm", moisture_results)
+        @test !isempty(alarms)
+        @test "3sigma" in alarms[1]["anomaly_rules"]
+    end
+
+    @testset "NaN run detection correct after buffer wrap" begin
+        Random.seed!(88888)
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"], buf_size=10)
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+
+        # Push 10 stable readings (fills buffer)
+        push_stable_baseline!(sol, 1, 10;
+                               baseline=Float32[0.30, 25.0, 1.2, 6.5],
+                               noise_std=0.005f0)
+        @test sol.history_length == 10
+
+        # Push 5 NaN readings (wraps buffer)
+        for _ in 1:5
+            push_features!(sol, 1, fill(Float32(NaN), d))
+        end
+        sol.vertex_features[1, :] .= Float32(NaN)
+        @test sol.history_head != 1  # has wrapped
+
+        # CPU helper should find run of 5:
+        #   1 from vertex_features (current) + 4 from history walk.
+        #   The walk starts at head-1 (k=1) to avoid double-counting
+        #   the most-recent history slot which equals vertex_features.
+        runs = count_nan_run(sol, 1)
+        @test length(runs) == d
+        @test all(runs .== 5)
+
+        # Anomaly detector should also classify as sensor_outage
+        # (threshold MIN_NAN_RUN_FOR_OUTAGE = 4, so run of 5 qualifies)
+        results = compute_anomaly_detection(graph)
+        outage_results = filter(r -> r["anomaly_type"] == "sensor_outage", results)
+        @test !isempty(outage_results)
+        @test any(r -> r["nan_run_length"] >= 5, outage_results)
+    end
+
+    @testset "anomaly lookback matches get_history ordering after wrap" begin
+        # Small buffer (buf_size=8), push 12 readings (wraps buffer)
+        Random.seed!(77777)
+        graph = make_anomaly_graph(nv=1, layers_list=["soil"], buf_size=8)
+        sol = graph.layers[:soil]
+        d = size(sol.vertex_features, 2)
+
+        # Push 12 readings with increasing moisture: 0.10, 0.11, ..., 0.21
+        for t in 1:12
+            m = Float32(0.09 + 0.01 * t)
+            push_features!(sol, 1, Float32[m, 25.0, 1.2, 6.5])
+        end
+        @test sol.history_length == 8  # capped at buf_size
+        @test sol.history_head != 1    # has wrapped
+
+        # get_history should return oldest-first: values 5..12
+        hist = get_history(sol, 1)
+        @test size(hist, 2) == 8
+        # Most recent (last column) should be the 12th push: 0.09 + 0.12 = 0.21
+        @test hist[1, end] ≈ Float32(0.21) atol=1e-5
+        # Oldest (first column) should be the 5th push: 0.09 + 0.05 = 0.14
+        @test hist[1, 1] ≈ Float32(0.14) atol=1e-5
+
+        # Now inject an extreme outlier — should fire correctly
+        sol.vertex_features[1, :] .= Float32[0.95, 25.0, 1.2, 6.5]
+        results = compute_anomaly_detection(graph)
+        moisture_results = filter(r -> r["feature"] == "moisture" &&
+                                       r["anomaly_type"] != "sensor_outage", results)
+        @test !isempty(moisture_results)
+        @test any(r -> r["severity"] == "alarm", moisture_results)
+
+        # Verify lookback fires based on ACTUAL recent data (values 5-12)
+        for r in moisture_results
+            @test haskey(r, "anomaly_rules")
         end
     end
 end

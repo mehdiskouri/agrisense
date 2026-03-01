@@ -174,7 +174,8 @@ of length d (number of features). Mirrors `nan_run_kernel!` logic exactly.
 function count_nan_run(layer::HyperGraphLayer, vertex_idx::Int)::Vector{Int}
     d = size(layer.vertex_features, 2)
     buf_size = size(layer.feature_history, 3)
-    head = mod1(layer.history_length, buf_size)
+    # history_head points to the NEXT write slot; most-recent write is head-1
+    head = mod1(layer.history_head - 1, buf_size)
     valid_len = layer.history_length
     history_cpu = ensure_cpu(layer.feature_history)
     vf_cpu = ensure_cpu(layer.vertex_features)
@@ -254,7 +255,8 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
                          Int32[layer.history_length])
 
         # Head pointer as 1-element device array
-        head_val = Int32(mod1(layer.history_length, size(layer.feature_history, 3)))
+        # history_head points to the NEXT write slot; most-recent write is head-1
+        head_val = Int32(mod1(layer.history_head - 1, size(layer.feature_history, 3)))
         head_arr = backend isa CPU ? Int32[head_val] :
                    (HAS_CUDA ? CuArray(Int32[head_val]) : Int32[head_val])
         buf_size = Int32(size(layer.feature_history, 3))
