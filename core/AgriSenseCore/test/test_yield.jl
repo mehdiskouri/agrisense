@@ -337,6 +337,12 @@ end
         @test all(kn .< 0.5f0)
     end
 
+    @testset "NaN DLI → Kl defaults to 1.0 (no light stress)" begin
+        graph = make_yield_graph(dli=Float32[NaN, NaN, NaN, NaN])
+        _, _, kl, _ = compute_stress_coefficients(graph)
+        @test all(kl .≈ 1.0f0)  # NaN DLI → optimal DLI → Kl=1.0
+    end
+
     @testset "NaN DLI in history → cumulative DLI treats NaN as 0" begin
         graph = make_yield_graph()
         ll = graph.layers[:lighting]
@@ -385,6 +391,7 @@ end
         graph = make_yield_graph(
             soil_moisture=Float32[NaN, 0.30, NaN, 0.30],
             temperature=Float32[NaN, 22.0, NaN, 22.0],
+            dli=Float32[NaN, 20.0, NaN, 20.0],
         )
         results = compute_yield_forecast(graph)
         @test !isempty(results)

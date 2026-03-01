@@ -174,12 +174,13 @@ function compute_stress_coefficients(graph::LayeredHyperGraph)
                        crop_feat[:, 3], crop_feat[:, 4], crop_feat[:, 5])
     end
 
-    # --- Light stress Kl (GPU broadcast) ---
+    # --- Light stress Kl (GPU broadcast) — NaN DLI → Kl=1.0 (no stress assumed) ---
     kl = copy(_ones)
     if haskey(graph.layers, :lighting)
         dli = graph.layers[:lighting].vertex_features[:, 2]
         optimal_dli = 20.0f0
-        kl = @. clamp(dli / optimal_dli, 0.0f0, 1.0f0)
+        safe_dli = @. ifelse(isnan(dli), optimal_dli, dli)
+        kl = @. clamp(safe_dli / optimal_dli, 0.0f0, 1.0f0)
     end
 
     # --- Weather stress Kw (GPU kernel — piecewise linear) ---
