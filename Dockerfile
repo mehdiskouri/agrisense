@@ -2,11 +2,11 @@
 # AgriSense — Multi-stage Dockerfile
 # Stage 1: Julia precompilation (cached layer)
 # Stage 2: Python dependencies (cached layer)
-# Stage 3: Runtime — Python 3.12 + Julia 1.11 + CUDA-ready
+# Stage 3: Runtime — Python 3.13 + Julia 1.12 + CUDA-ready
 # ============================================================================
 
 # ── Stage 1: Julia dependency precompilation ────────────────────────────────
-FROM julia:1.11-bookworm AS julia-deps
+FROM julia:1.12-bookworm AS julia-deps
 
 WORKDIR /julia-build
 COPY core/AgriSenseCore/Project.toml core/AgriSenseCore/Project.toml
@@ -19,7 +19,7 @@ RUN julia --project=core/AgriSenseCore -e ' \
 '
 
 # ── Stage 2: Python dependencies ────────────────────────────────────────────
-FROM python:3.12-slim-bookworm AS python-deps
+FROM python:3.13-slim-bookworm AS python-deps
 
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,7 +30,7 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir --prefix=/install .
 
 # ── Stage 3: Runtime ────────────────────────────────────────────────────────
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.13-slim-bookworm AS runtime
 
 # Metadata
 LABEL maintainer="Mehdi Skouri"
@@ -41,9 +41,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Julia 1.11
-ENV JULIA_VERSION=1.11.2
-RUN wget -q "https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" \
+# Install Julia 1.12
+ENV JULIA_VERSION=1.12.5
+RUN wget -q "https://julialang-s3.julialang.org/bin/linux/x64/1.12/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" \
     && tar -xzf "julia-${JULIA_VERSION}-linux-x86_64.tar.gz" -C /opt/ \
     && ln -s "/opt/julia-${JULIA_VERSION}/bin/julia" /usr/local/bin/julia \
     && rm "julia-${JULIA_VERSION}-linux-x86_64.tar.gz"

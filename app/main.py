@@ -26,6 +26,13 @@ from app.services.farm_service import FarmService
 logger = logging.getLogger("agrisense")
 
 
+async def _ping_redis(redis_client: Redis) -> bool:
+    result = redis_client.ping()
+    if isinstance(result, bool):
+        return result
+    return await result
+
+
 async def _bootstrap_graph_cache() -> int:
     """Build and cache graph state for all farms present in the database."""
     async with async_session_factory() as session:
@@ -72,7 +79,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await connection.execute(text("SELECT 1"))
 
         redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        await redis.ping()
+        await _ping_redis(redis)
         app.state.redis = redis
 
         julia_bridge.initialize_julia()
@@ -154,7 +161,7 @@ async def _run_readiness_checks(app_instance: FastAPI) -> dict[str, dict[str, An
         checks["redis"] = {"ok": False, "message": "redis not initialized"}
     else:
         try:
-            await redis_client.ping()
+            await _ping_redis(redis_client)
         except Exception as exc:
             checks["redis"] = {"ok": False, "message": str(exc)}
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -9,8 +9,13 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 
-from app.schemas.ingest import BulkIngestReceipt, IngestReceipt, IngestWarning
-from app.schemas.ingest import SoilReadingIn, WeatherReadingIn
+from app.schemas.ingest import (
+    BulkIngestReceipt,
+    IngestReceipt,
+    IngestWarning,
+    SoilReadingIn,
+    WeatherReadingIn,
+)
 from app.services import julia_bridge
 from app.services.ingest_service import IngestService
 
@@ -22,7 +27,9 @@ async def test_ingest_soil_endpoint_success(
 ) -> None:
     farm_id = uuid4()
 
-    async def fake_ingest(self: IngestService, _farm_id: object, _readings: object) -> IngestReceipt:
+    async def fake_ingest(
+        self: IngestService, _farm_id: object, _readings: object
+    ) -> IngestReceipt:
         return IngestReceipt(
             farm_id=farm_id,
             layer="soil",
@@ -61,7 +68,9 @@ async def test_ingest_weather_error_mapping(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_ingest(self: IngestService, _farm_id: object, _readings: object) -> IngestReceipt:
+    async def fake_ingest(
+        self: IngestService, _farm_id: object, _readings: object
+    ) -> IngestReceipt:
         raise ValueError("invalid weather station")
 
     monkeypatch.setattr(IngestService, "ingest_weather", fake_ingest)
@@ -93,7 +102,9 @@ async def test_ingest_bulk_partial_success(
 ) -> None:
     farm_id = uuid4()
 
-    async def fake_bulk(self: IngestService, _farm_id: object, **_kwargs: object) -> BulkIngestReceipt:
+    async def fake_bulk(
+        self: IngestService, _farm_id: object, **_kwargs: object
+    ) -> BulkIngestReceipt:
         warning = IngestWarning(index=0, message="npk failed")
         return BulkIngestReceipt(
             farm_id=farm_id,
@@ -127,7 +138,15 @@ async def test_ingest_bulk_partial_success(
 
     response = await client.post(
         "/api/v1/ingest/bulk",
-        json={"farm_id": str(farm_id), "soil": [], "weather": [], "irrigation": [], "npk": [], "vision": [], "lighting": []},
+        json={
+            "farm_id": str(farm_id),
+            "soil": [],
+            "weather": [],
+            "irrigation": [],
+            "npk": [],
+            "vision": [],
+            "lighting": [],
+        },
     )
 
     assert response.status_code == 200
@@ -175,7 +194,7 @@ class _FakeDb:
 
     async def flush(self) -> None:
         for index, row in enumerate(self._rows, start=1):
-            setattr(row, "id", index)
+            row.id = index
 
     def begin_nested(self) -> _NestedTx:
         return _NestedTx()
@@ -192,7 +211,9 @@ async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPa
 
     zone_id = uuid4()
 
-    async def _fake_vertex(_vertex_id: object, _farm_id: object, _allowed_types: object) -> SimpleNamespace:
+    async def _fake_vertex(
+        _vertex_id: object, _farm_id: object, _allowed_types: object
+    ) -> SimpleNamespace:
         return SimpleNamespace(config={"sensor_type": "soil"}, zone_id=zone_id)
 
     async def _fake_graph(_farm_id: object) -> dict[str, object]:
@@ -200,7 +221,9 @@ async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPa
 
     graph_calls: list[tuple[str, str]] = []
 
-    def _fake_update_features(graph: dict[str, object], layer: str, vertex_id: str, features: list[float]) -> dict[str, object]:
+    def _fake_update_features(
+        graph: dict[str, object], layer: str, vertex_id: str, features: list[float]
+    ) -> dict[str, object]:
         graph_calls.append((layer, vertex_id))
         return graph
 
@@ -245,7 +268,9 @@ async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_bulk_failed_layer_does_not_persist_graph_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_bulk_failed_layer_does_not_persist_graph_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db = _FakeDb()
     service = IngestService(db, None)
     farm_id = uuid4()

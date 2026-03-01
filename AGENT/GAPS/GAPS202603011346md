@@ -1,0 +1,50 @@
+# Flaky Test Diagnosis — `stable baseline produces no anomalies`
+
+Date: 2026-03-01
+
+## Summary
+
+The intermittent Julia failure is primarily rooted in nondeterministic test input generation, with a secondary indexing inconsistency in anomaly window selection logic that can increase sensitivity.
+
+## Failing Test
+
+- File: `core/AgriSenseCore/test/test_anomaly.jl`
+- Test: `stable baseline produces no anomalies`
+- Observed failure mode: expected `isempty(results)`, but occasionally receives a warning anomaly (e.g., conductivity, `2of3_2sigma` / `4of5_1sigma`-style rule activity).
+
+## Root Cause (Primary)
+
+### 1) Unseeded random baseline generation in test
+
+The stable baseline helper uses Gaussian noise without explicit deterministic seeding. This means rare statistical excursions can legitimately trigger warning-level rules.
+
+- Location: `core/AgriSenseCore/test/test_anomaly.jl` (baseline generator around the stable-baseline setup)
+- Why flaky: same logic + different RNG state across runs can produce occasional warning patterns while still having no true anomaly condition.
+
+## Contributing Factor (Secondary)
+
+### 2) Ring-buffer head derivation mismatch in anomaly logic
+
+Anomaly rule evaluation computes recent-window head from `history_length` rather than directly using the maintained ring-buffer `history_head` write position. This can shift which points are considered “recent” and alter rule outcomes near thresholds.
+
+- Ring buffer write/head semantics: `core/AgriSenseCore/src/types.jl`
+- Anomaly recent-window/head derivation: `core/AgriSenseCore/src/models/anomaly.jl`
+- Impact: not always failing, but can amplify sensitivity and contribute to occasional warning emissions.
+
+## Why This Is Not a Persistent Functional Regression
+
+- Full suite and isolated anomaly suite were both observed to pass on reruns.
+- Failure reproduced as intermittent rather than deterministic.
+- Symptom aligns with threshold-rule warning sensitivity over random noise.
+
+## Stabilization Options
+
+1. Seed RNG deterministically in `test_anomaly.jl` for stable-baseline setup.
+2. Relax assertion to disallow alarms but tolerate expected low-frequency warnings, if statistically intended.
+3. Align anomaly recent-window indexing with actual `history_head` semantics in core implementation.
+4. Add seed-sweep CI check for anomaly tests to detect probabilistic edge cases proactively.
+
+## Confidence
+
+- Primary cause (unseeded randomness): High
+- Secondary contributor (head/index mismatch): Medium-High

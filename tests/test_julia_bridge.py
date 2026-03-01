@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import sys
-from types import ModuleType, SimpleNamespace
 from datetime import UTC, datetime
+from types import ModuleType, SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest

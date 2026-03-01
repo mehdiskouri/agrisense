@@ -15,6 +15,7 @@ from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.contracts import LightingSpectrumProfile, VisionEventMetadata
 from app.models.base import Base, TimeSeriesMixin
 from app.models.enums import (
     AnomalyTypeEnum,
@@ -31,28 +32,21 @@ class SoilReading(Base, TimeSeriesMixin):
     """Soil sensor reading — moisture, temperature, EC, pH."""
 
     __tablename__ = "soil_readings"
-    __table_args__ = (
-        Index("ix_soil_readings_sensor_ts", "sensor_id", "timestamp"),
-    )
+    __table_args__ = (Index("ix_soil_readings_sensor_ts", "sensor_id", "timestamp"),)
 
     sensor_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("vertices.id", ondelete="CASCADE"),
         nullable=False,
     )
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     moisture: Mapped[float] = mapped_column(Float, nullable=False)
     temperature: Mapped[float] = mapped_column(Float, nullable=False)
     conductivity: Mapped[float | None] = mapped_column(Float, nullable=True)
     ph: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     def __repr__(self) -> str:
-        return (
-            f"<SoilReading id={self.id} sensor={self.sensor_id} "
-            f"ts={self.timestamp}>"
-        )
+        return f"<SoilReading id={self.id} sensor={self.sensor_id} ts={self.timestamp}>"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -64,18 +58,14 @@ class WeatherReading(Base, TimeSeriesMixin):
     """Weather station reading — temp, humidity, rain, wind, pressure, ET₀."""
 
     __tablename__ = "weather_readings"
-    __table_args__ = (
-        Index("ix_weather_readings_station_ts", "station_id", "timestamp"),
-    )
+    __table_args__ = (Index("ix_weather_readings_station_ts", "station_id", "timestamp"),)
 
     station_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("vertices.id", ondelete="CASCADE"),
         nullable=False,
     )
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     temperature: Mapped[float] = mapped_column(Float, nullable=False)
     humidity: Mapped[float] = mapped_column(Float, nullable=False)
     precipitation_mm: Mapped[float] = mapped_column(Float, nullable=False)
@@ -85,10 +75,7 @@ class WeatherReading(Base, TimeSeriesMixin):
     et0: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     def __repr__(self) -> str:
-        return (
-            f"<WeatherReading id={self.id} station={self.station_id} "
-            f"ts={self.timestamp}>"
-        )
+        return f"<WeatherReading id={self.id} station={self.station_id} ts={self.timestamp}>"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -113,12 +100,8 @@ class IrrigationEvent(Base, TimeSeriesMixin):
         ForeignKey("vertices.id", ondelete="CASCADE"),
         nullable=False,
     )
-    timestamp_start: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    timestamp_end: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    timestamp_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timestamp_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     volume_liters: Mapped[float | None] = mapped_column(Float, nullable=True)
     trigger: Mapped[IrrigationTriggerEnum] = mapped_column(
         Enum(
@@ -131,10 +114,7 @@ class IrrigationEvent(Base, TimeSeriesMixin):
     )
 
     def __repr__(self) -> str:
-        return (
-            f"<IrrigationEvent id={self.id} valve={self.valve_id} "
-            f"trigger={self.trigger}>"
-        )
+        return f"<IrrigationEvent id={self.id} valve={self.valve_id} trigger={self.trigger}>"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -146,24 +126,18 @@ class NpkSample(Base, TimeSeriesMixin):
     """NPK nutrient sample — lab results or inline sensor readings."""
 
     __tablename__ = "npk_samples"
-    __table_args__ = (
-        Index("ix_npk_samples_zone_ts", "zone_id", "timestamp"),
-    )
+    __table_args__ = (Index("ix_npk_samples_zone_ts", "zone_id", "timestamp"),)
 
     zone_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("zones.id", ondelete="CASCADE"),
         nullable=False,
     )
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     nitrogen_mg_kg: Mapped[float] = mapped_column(Float, nullable=False)
     phosphorus_mg_kg: Mapped[float] = mapped_column(Float, nullable=False)
     potassium_mg_kg: Mapped[float] = mapped_column(Float, nullable=False)
-    organic_matter_pct: Mapped[float | None] = mapped_column(
-        Float, nullable=True
-    )
+    organic_matter_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     source: Mapped[NpkSourceEnum] = mapped_column(
         Enum(
             NpkSourceEnum,
@@ -175,10 +149,7 @@ class NpkSample(Base, TimeSeriesMixin):
     )
 
     def __repr__(self) -> str:
-        return (
-            f"<NpkSample id={self.id} zone={self.zone_id} "
-            f"source={self.source}>"
-        )
+        return f"<NpkSample id={self.id} zone={self.zone_id} source={self.source}>"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -194,9 +165,7 @@ class VisionEvent(Base, TimeSeriesMixin):
     """
 
     __tablename__ = "vision_events"
-    __table_args__ = (
-        Index("ix_vision_events_camera_ts", "camera_id", "timestamp"),
-    )
+    __table_args__ = (Index("ix_vision_events_camera_ts", "camera_id", "timestamp"),)
 
     camera_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -208,9 +177,7 @@ class VisionEvent(Base, TimeSeriesMixin):
         ForeignKey("vertices.id", ondelete="CASCADE"),
         nullable=False,
     )
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     anomaly_type: Mapped[AnomalyTypeEnum] = mapped_column(
         Enum(
             AnomalyTypeEnum,
@@ -221,18 +188,11 @@ class VisionEvent(Base, TimeSeriesMixin):
         nullable=False,
     )
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    canopy_coverage_pct: Mapped[float | None] = mapped_column(
-        Float, nullable=True
-    )
-    metadata_: Mapped[dict | None] = mapped_column(
-        "metadata", JSONB, nullable=True
-    )
+    canopy_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metadata_: Mapped[VisionEventMetadata | None] = mapped_column("metadata", JSONB, nullable=True)
 
     def __repr__(self) -> str:
-        return (
-            f"<VisionEvent id={self.id} camera={self.camera_id} "
-            f"anomaly={self.anomaly_type}>"
-        )
+        return f"<VisionEvent id={self.id} camera={self.camera_id} anomaly={self.anomaly_type}>"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -244,30 +204,18 @@ class LightingReading(Base, TimeSeriesMixin):
     """Lighting fixture reading — PAR, DLI, duty cycle, spectrum."""
 
     __tablename__ = "lighting_readings"
-    __table_args__ = (
-        Index(
-            "ix_lighting_readings_fixture_ts", "fixture_id", "timestamp"
-        ),
-    )
+    __table_args__ = (Index("ix_lighting_readings_fixture_ts", "fixture_id", "timestamp"),)
 
     fixture_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("vertices.id", ondelete="CASCADE"),
         nullable=False,
     )
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     par_umol: Mapped[float] = mapped_column(Float, nullable=False)
     dli_cumulative: Mapped[float] = mapped_column(Float, nullable=False)
     duty_cycle_pct: Mapped[float] = mapped_column(Float, nullable=False)
-    spectrum_profile: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    spectrum_profile: Mapped[LightingSpectrumProfile | None] = mapped_column(JSONB, nullable=True)
 
     def __repr__(self) -> str:
-        return (
-            f"<LightingReading id={self.id} fixture={self.fixture_id} "
-            f"par={self.par_umol}>"
-        )
-
+        return f"<LightingReading id={self.id} fixture={self.fixture_id} par={self.par_umol}>"

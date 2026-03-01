@@ -13,7 +13,9 @@ from app.services.llm_service import LLMService
 async def test_ask_endpoint_success(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     farm_id = uuid4()
 
-    async def fake_ask(self: LLMService, farm_id: object, question: str, language: AskLanguage) -> AskResponse:
+    async def fake_ask(
+        self: LLMService, farm_id: object, question: str, language: AskLanguage
+    ) -> AskResponse:
         return AskResponse(
             farm_id=str(farm_id),
             question=question,

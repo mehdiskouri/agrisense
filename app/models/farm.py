@@ -16,6 +16,12 @@ from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.contracts import (
+    FarmModelOverrides,
+    HyperEdgeMetadata,
+    VertexConfig,
+    ZoneMetadata,
+)
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.enums import (
     FarmTypeEnum,
@@ -60,7 +66,7 @@ class Farm(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default="UTC",
         server_default=text("'UTC'"),
     )
-    model_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    model_overrides: Mapped[FarmModelOverrides | None] = mapped_column(JSONB, nullable=True)
 
     # ── Relationships ────────────────────────────────────────────────────
     zones: Mapped[list[Zone]] = relationship(
@@ -124,9 +130,7 @@ class Zone(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default="unknown",
         server_default=text("'unknown'"),
     )
-    metadata_: Mapped[dict | None] = mapped_column(
-        "metadata", JSONB, nullable=True
-    )
+    metadata_: Mapped[ZoneMetadata | None] = mapped_column("metadata", JSONB, nullable=True)
 
     # ── Relationships ────────────────────────────────────────────────────
     farm: Mapped[Farm] = relationship(back_populates="zones")
@@ -154,9 +158,7 @@ class Vertex(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
 
     __tablename__ = "vertices"
-    __table_args__ = (
-        Index("ix_vertices_farm_id_type", "farm_id", "vertex_type"),
-    )
+    __table_args__ = (Index("ix_vertices_farm_id_type", "farm_id", "vertex_type"),)
 
     farm_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -177,23 +179,16 @@ class Vertex(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         nullable=False,
     )
-    config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    installed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_seen_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    config: Mapped[VertexConfig | None] = mapped_column(JSONB, nullable=True)
+    installed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # ── Relationships ────────────────────────────────────────────────────
     farm: Mapped[Farm] = relationship(back_populates="vertices")
     zone: Mapped[Zone | None] = relationship(back_populates="vertices")
 
     def __repr__(self) -> str:
-        return (
-            f"<Vertex id={self.id} type={self.vertex_type} "
-            f"zone={self.zone_id}>"
-        )
+        return f"<Vertex id={self.id} type={self.vertex_type} zone={self.zone_id}>"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -238,9 +233,7 @@ class HyperEdge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ARRAY(UUID(as_uuid=True)),
         nullable=False,
     )
-    metadata_: Mapped[dict | None] = mapped_column(
-        "metadata", JSONB, nullable=True
-    )
+    metadata_: Mapped[HyperEdgeMetadata | None] = mapped_column("metadata", JSONB, nullable=True)
 
     # ── Relationships ────────────────────────────────────────────────────
     farm: Mapped[Farm] = relationship(back_populates="hyperedges")
@@ -248,4 +241,3 @@ class HyperEdge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         n = len(self.vertex_ids) if self.vertex_ids else 0
         return f"<HyperEdge id={self.id} layer={self.layer} vertices={n}>"
-

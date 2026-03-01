@@ -11,8 +11,8 @@ on:
     branches: [main, master]
 
 env:
-  PYTHON_VERSION: "3.12"
-  JULIA_VERSION: "1.11"
+  PYTHON_VERSION: "3.13"
+  JULIA_VERSION: "1.12"
 
 jobs:
   # ── Lint & Type Check ────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dev dependencies
-        run: pip install ruff mypy pydantic
+        run: pip install ".[dev]"
 
       - name: Ruff check
         run: ruff check app/ tests/ scripts/
@@ -36,7 +36,7 @@ jobs:
         run: ruff format --check app/ tests/ scripts/
 
       - name: Mypy
-        run: mypy app/ --ignore-missing-imports
+        run: mypy app/
         continue-on-error: true  # strict mode may flag stubs initially
 
   # ── Python Tests ─────────────────────────────────────────────────────────

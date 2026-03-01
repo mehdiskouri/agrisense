@@ -40,6 +40,8 @@ dev = [
     "httpx>=0.28.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    "types-python-jose>=3.5.0.20250531",
+    "types-passlib>=1.7.7.20250602",
     "pre-commit>=4.0.0",
 ]
 
@@ -86,21 +88,11 @@ known-first-party = ["app"]
 # Mypy — type checking
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
 plugins = ["pydantic.mypy"]
-
-[[tool.mypy.overrides]]
-module = [
-    "juliacall.*",
-    "redis.*",
-    "jose.*",
-    "passlib.*",
-    "geoalchemy2.*",
-]
-ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # Pytest

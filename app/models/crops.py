@@ -23,6 +23,7 @@ from sqlalchemy import String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.contracts import CropGrowthStage
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
@@ -31,16 +32,11 @@ class CropProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "crop_profiles"
 
-    crop_type: Mapped[str] = mapped_column(
-        String(100), unique=True, nullable=False
-    )
-    growth_stages: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    crop_type: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    growth_stages: Mapped[list[CropGrowthStage]] = mapped_column(JSONB, nullable=False)
     source: Mapped[str] = mapped_column(
         String(100), nullable=False, default="FAO", server_default="FAO"
     )
 
     def __repr__(self) -> str:
-        return (
-            f"<CropProfile id={self.id} crop={self.crop_type!r} "
-            f"source={self.source!r}>"
-        )
+        return f"<CropProfile id={self.id} crop={self.crop_type!r} source={self.source!r}>"

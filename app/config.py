@@ -27,9 +27,7 @@ class Settings(BaseSettings):
     )
 
     # ── Database ────────────────────────────────────────────────────────────
-    database_url: str = (
-        "postgresql+asyncpg://agrisense:agrisense@localhost:5432/agrisense"
-    )
+    database_url: str = "postgresql+asyncpg://agrisense:agrisense@localhost:5432/agrisense"
 
     # ── Redis ───────────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"

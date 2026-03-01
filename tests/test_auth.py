@@ -5,13 +5,13 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 
 from app.auth.dependencies import AuthPrincipal, require_machine_scope
 from app.auth.jwt import AuthError, create_access_token, decode_token
 from app.main import app
 from app.models.enums import UserRoleEnum
-from app.routes import farms as farms_routes
 from app.services.farm_service import FarmService
 
 
@@ -57,7 +57,9 @@ async def test_rbac_forbidden_for_readonly_create_farm(client: AsyncClient) -> N
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_per_farm(fake_redis: object, client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_rate_limit_per_farm(
+    fake_redis: object, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     farm_id = uuid4()
     app.state.redis = fake_redis
 
@@ -97,7 +99,7 @@ async def test_machine_scope_enforcement_for_api_key_principal() -> None:
         api_key_id=uuid4(),
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         await dependency(principal)
 
     allowed = AuthPrincipal(

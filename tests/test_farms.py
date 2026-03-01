@@ -8,8 +8,8 @@ import pytest
 from httpx import AsyncClient
 
 from app.models.enums import FarmTypeEnum, VertexTypeEnum, ZoneTypeEnum
-from app.services.farm_service import FarmService
 from app.services import julia_bridge
+from app.services.farm_service import FarmService
 
 
 def _farm_obj() -> SimpleNamespace:
@@ -114,14 +114,8 @@ async def test_get_graph_endpoint(client: AsyncClient, monkeypatch: pytest.Monke
 
 
 def test_zone_resolution_rules() -> None:
-    assert (
-        FarmService._resolve_zone_type(FarmTypeEnum.open_field, None)
-        == ZoneTypeEnum.open_field
-    )
-    assert (
-        FarmService._resolve_zone_type(FarmTypeEnum.greenhouse, None)
-        == ZoneTypeEnum.greenhouse
-    )
+    assert FarmService._resolve_zone_type(FarmTypeEnum.open_field, None) == ZoneTypeEnum.open_field
+    assert FarmService._resolve_zone_type(FarmTypeEnum.greenhouse, None) == ZoneTypeEnum.greenhouse
     with pytest.raises(ValueError):
         FarmService._resolve_zone_type(FarmTypeEnum.hybrid, None)
 
@@ -159,7 +153,9 @@ async def test_add_zone_endpoint(client: AsyncClient, monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_register_sensor_endpoint(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_register_sensor_endpoint(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     now = datetime.now(UTC)
     farm_id = uuid4()
     vertex = SimpleNamespace(

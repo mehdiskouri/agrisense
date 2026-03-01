@@ -13,6 +13,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.contracts import APIKeyScopes
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.enums import UserRoleEnum
 
@@ -22,12 +23,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "users"
 
-    email: Mapped[str] = mapped_column(
-        String(320), unique=True, nullable=False, index=True
-    )
-    hashed_password: Mapped[str] = mapped_column(
-        String(128), nullable=False
-    )
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(128), nullable=False)
     role: Mapped[UserRoleEnum] = mapped_column(
         Enum(
             UserRoleEnum,
@@ -72,14 +69,10 @@ class APIKey(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    key_hash: Mapped[str] = mapped_column(
-        String(128), unique=True, nullable=False
-    )
+    key_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    scopes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    scopes: Mapped[APIKeyScopes | None] = mapped_column(JSONB, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         default=True,
         server_default=text("true"),

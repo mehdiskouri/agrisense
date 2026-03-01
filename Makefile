@@ -29,7 +29,7 @@ format: ## Auto-format with ruff
 	ruff check --fix app/ tests/ scripts/
 
 typecheck: ## Run mypy type checker
-	mypy app/ --ignore-missing-imports
+	mypy app/
 
 # ── Testing ────────────────────────────────────────────────────────────────
 test: ## Run Python test suite

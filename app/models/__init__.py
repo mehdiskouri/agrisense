@@ -29,10 +29,10 @@ from app.models.enums import (
     VertexTypeEnum,
     ZoneTypeEnum,
 )
-from app.models.jobs import RecomputeJob
 
 # ── Core topology models ────────────────────────────────────────────────────
 from app.models.farm import Farm, HyperEdge, Vertex, Zone
+from app.models.jobs import RecomputeJob
 
 # ── Time-series sensor models ──────────────────────────────────────────────
 from app.models.sensors import (
@@ -46,13 +46,9 @@ from app.models.sensors import (
 
 __all__ = [
     "AnomalyTypeEnum",
-    # Base & mixins
     "Base",
-    # Crop reference
     "CropProfile",
-    # Core topology
     "Farm",
-    # Enums
     "FarmTypeEnum",
     "HyperEdge",
     "HyperEdgeLayerEnum",
@@ -62,13 +58,12 @@ __all__ = [
     "LightingReading",
     "NpkSample",
     "NpkSourceEnum",
-    # Time-series
+    "RecomputeJob",
     "SoilReading",
     "TimeSeriesMixin",
     "TimestampMixin",
     "UUIDPrimaryKeyMixin",
     "UserRoleEnum",
-    "RecomputeJob",
     "Vertex",
     "VertexTypeEnum",
     "VisionEvent",
