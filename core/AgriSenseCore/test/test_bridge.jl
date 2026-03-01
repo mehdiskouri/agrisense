@@ -209,4 +209,90 @@ end
             @test all(lyr.vertex_features_mask)
         end
     end
+
+    # ── Phase 14: Lightweight ack & batch update ──────────────────────────
+    @testset "Phase 14: update_features returns lightweight ack" begin
+        graph = make_bridge_graph()
+        state = serialize_graph(graph)
+        ack = update_features(state, "soil", "v1", [0.5, 22.0, 1.0, 6.5])
+        @test ack["ok"] == true
+        @test haskey(ack, "farm_id")
+        @test haskey(ack, "version")
+        @test ack["layer"] == "soil"
+        @test ack["vertex_id"] == "v1"
+        # ack must NOT contain full graph state
+        @test !haskey(ack, "layers")
+        @test !haskey(ack, "n_vertices")
+    end
+
+    @testset "Phase 14: graph_version increments on cache" begin
+        farm_id = "test-phase14-version-$(rand(1:100000))"
+        graph = make_bridge_graph()
+        v0 = graph_version(farm_id)
+        @test v0 == 0
+        cache_graph!(farm_id, graph)
+        v1 = graph_version(farm_id)
+        @test v1 >= 1
+        cache_graph!(farm_id, graph)
+        v2 = graph_version(farm_id)
+        @test v2 > v1
+        evict_graph!(farm_id)
+        @test graph_version(farm_id) == 0
+    end
+
+    @testset "Phase 14: batch_update_features" begin
+        farm_id = "test-phase14-batch-$(rand(1:100000))"
+        graph = make_bridge_graph()
+        cache_graph!(farm_id, graph)
+
+        updates = [
+            Dict{String,Any}("layer" => "soil", "vertex_id" => "v1", "features" => [0.1, 20.0, 0.5, 6.0]),
+            Dict{String,Any}("layer" => "soil", "vertex_id" => "v2", "features" => [0.2, 21.0, 0.6, 6.1]),
+            Dict{String,Any}("layer" => "irrigation", "vertex_id" => "v3", "features" => [25.0, 60.0, 0.0]),
+        ]
+        ack = batch_update_features(farm_id, updates)
+        @test ack["ok"] == true
+        @test ack["n_updated"] == 3
+        @test ack["farm_id"] == farm_id
+        @test haskey(ack, "version")
+
+        evict_graph!(farm_id)
+    end
+
+    @testset "Phase 14: get_graph_by_id" begin
+        farm_id = "test-phase14-getgraph-$(rand(1:100000))"
+        graph = make_bridge_graph()
+        cache_graph!(farm_id, graph)
+
+        state = get_graph_by_id(farm_id)
+        @test haskey(state, "layers")
+        @test haskey(state, "n_vertices")
+        @test haskey(state, "farm_id")
+        @test state["farm_id"] == farm_id
+
+        evict_graph!(farm_id)
+    end
+
+    @testset "Phase 14: ensure_graph" begin
+        farm_id = "test-phase14-ensure-$(rand(1:100000))"
+        # Not cached → should error
+        @test_throws ErrorException ensure_graph(farm_id)
+
+        graph = make_bridge_graph()
+        cache_graph!(farm_id, graph)
+        ack = ensure_graph(farm_id)
+        @test ack["ok"] == true
+        @test ack["cached"] == true
+        @test ack["farm_id"] == farm_id
+
+        evict_graph!(farm_id)
+    end
+
+    @testset "Phase 14: batch_update_features on uncached graph errors" begin
+        farm_id = "test-phase14-batch-nocache-$(rand(1:100000))"
+        updates = [
+            Dict{String,Any}("layer" => "soil", "vertex_id" => "v1", "features" => [0.1, 20.0, 0.5, 6.0]),
+        ]
+        @test_throws ErrorException batch_update_features(farm_id, updates)
+    end
 end

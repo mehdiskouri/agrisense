@@ -160,9 +160,9 @@ class FarmService:
         farm_id: uuid.UUID,
         zone_id: uuid.UUID,
     ) -> dict[str, Any]:
-        graph_state = await self.get_graph(farm_id)
+        await self.get_graph(farm_id)  # ensure Julia cache is seeded
         query_vertex_id = await self.resolve_zone_query_vertex_id(farm_id, zone_id)
-        return julia_bridge.query_farm_status(graph_state, query_vertex_id)
+        return julia_bridge.query_farm_status(str(farm_id), query_vertex_id)
 
     async def build_farm_graph_config(self, farm_id: uuid.UUID) -> dict[str, Any]:
         farm = await self.get_farm(farm_id)

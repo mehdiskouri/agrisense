@@ -216,21 +216,21 @@ async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPa
     ) -> SimpleNamespace:
         return SimpleNamespace(config={"sensor_type": "soil"}, zone_id=zone_id)
 
-    async def _fake_graph(_farm_id: object) -> dict[str, object]:
-        return {"state": "base"}
+    async def _fake_ensure_graph(_farm_id: object) -> None:
+        return None
 
-    graph_calls: list[tuple[str, str]] = []
+    batch_calls: list[tuple[str, list[dict[str, object]]]] = []
 
-    def _fake_update_features(
-        graph: dict[str, object], layer: str, vertex_id: str, features: list[float]
+    def _fake_batch_update(
+        farm_id: str, updates: list[dict[str, object]]
     ) -> dict[str, object]:
-        graph_calls.append((layer, vertex_id))
-        return graph
+        batch_calls.append((farm_id, updates))
+        return {"ok": True, "farm_id": farm_id, "version": 1, "n_updated": len(updates)}
 
     monkeypatch.setattr(service, "_validate_active_layer", _noop_validate)
     monkeypatch.setattr(service, "_require_vertex", _fake_vertex)
-    monkeypatch.setattr(service, "_get_graph_state", _fake_graph)
-    monkeypatch.setattr(julia_bridge, "update_features", _fake_update_features)
+    monkeypatch.setattr(service, "_ensure_graph", _fake_ensure_graph)
+    monkeypatch.setattr(julia_bridge, "batch_update_features", _fake_batch_update)
 
     farm_id = uuid4()
     readings = [
@@ -254,7 +254,8 @@ async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPa
 
     receipt = await service.ingest_soil(farm_id, readings)
 
-    assert len(graph_calls) == 2
+    assert len(batch_calls) == 1
+    assert len(batch_calls[0][1]) == 2  # 2 readings batched into 1 call
     assert fake_redis.publish.await_count == 2
     channel, payload = fake_redis.publish.await_args_list[0].args
     payload_data = json.loads(payload)
@@ -268,20 +269,15 @@ async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_bulk_failed_layer_does_not_persist_graph_mutation(
+async def test_bulk_failed_layer_does_not_corrupt_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = _FakeDb()
     service = IngestService(db, None)
     farm_id = uuid4()
-    service._graph_state_cache = {"state": "base"}
-
-    async def _fake_graph_state(_farm_id: object) -> dict[str, object]:
-        assert service._graph_state_cache is not None
-        return service._graph_state_cache
+    service._graph_built = True
 
     async def _ok_soil(_farm_id: object, _records: object) -> IngestReceipt:
-        service._graph_state_cache = {"state": "soil_committed"}
         now = datetime.now(UTC)
         return IngestReceipt(
             farm_id=farm_id,
@@ -296,10 +292,8 @@ async def test_bulk_failed_layer_does_not_persist_graph_mutation(
         )
 
     async def _fail_weather(_farm_id: object, _records: object) -> IngestReceipt:
-        service._graph_state_cache = {"state": "weather_failed_mutation"}
         raise RuntimeError("weather exploded")
 
-    monkeypatch.setattr(service, "_get_graph_state", _fake_graph_state)
     monkeypatch.setattr(service, "ingest_soil", _ok_soil)
     monkeypatch.setattr(service, "ingest_weather", _fail_weather)
 
@@ -330,4 +324,5 @@ async def test_bulk_failed_layer_does_not_persist_graph_mutation(
 
     assert receipt.status == "partial"
     assert receipt.layers["weather"].status == "failed"
-    assert service._graph_state_cache == {"state": "soil_committed"}
+    # _graph_built remains True — no rollback needed, Julia cache is authoritative
+    assert service._graph_built is True

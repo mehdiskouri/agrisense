@@ -92,13 +92,14 @@ end
 """
     update_features(graph_state, layer, vertex_id, features) -> Dict
 
-Use cached graph, push features into the specified layer (snapshot + ring buffer),
-and return the re-serialized graph state.
+Use cached graph, push features into the specified layer (snapshot + ring buffer).
+Returns a lightweight acknowledgement dict (no full serialization).
 """
 function update_features(graph_state::Dict, layer::String,
                           vertex_id::String,
                           features::Vector)::Dict{String,Any}
     graph = _get_graph(graph_state)
+    farm_id = graph.farm_id
     lsym = Symbol(layer)
     haskey(graph.layers, lsym) || error("update_features: layer '$layer' not found")
     haskey(graph.vertex_index, vertex_id) ||
@@ -106,7 +107,83 @@ function update_features(graph_state::Dict, layer::String,
 
     vidx = graph.vertex_index[vertex_id]
     push_features!(graph.layers[lsym], vidx, Float32.(features))
-    return serialize_graph(graph)
+    return Dict{String,Any}(
+        "ok" => true,
+        "farm_id" => farm_id,
+        "version" => graph_version(farm_id),
+        "layer" => layer,
+        "vertex_id" => vertex_id,
+    )
+end
+
+"""
+    batch_update_features(farm_id, updates) -> Dict
+
+Batch push features for multiple (layer, vertex_id, features) tuples in one call.
+Requires the graph to already be cached (call `build_graph` first).
+Returns a lightweight acknowledgement dict.
+
+`updates` is a `Vector{Dict}` where each element has:
+  - `"layer"` :: String
+  - `"vertex_id"` :: String
+  - `"features"` :: Vector{<:Real}
+"""
+function batch_update_features(farm_id::String,
+                                updates::Vector)::Dict{String,Any}
+    graph = get_cached_graph(farm_id)
+    graph === nothing && error("batch_update_features: graph for farm '$farm_id' not cached — call build_graph first")
+
+    n_updated = 0
+    for upd in updates
+        layer = string(upd["layer"])
+        vertex_id = string(upd["vertex_id"])
+        features = Float32.(upd["features"])
+        lsym = Symbol(layer)
+        haskey(graph.layers, lsym) || error("batch_update_features: layer '$layer' not found")
+        haskey(graph.vertex_index, vertex_id) ||
+            error("batch_update_features: vertex '$vertex_id' not found")
+        vidx = graph.vertex_index[vertex_id]
+        push_features!(graph.layers[lsym], vidx, features)
+        n_updated += 1
+    end
+
+    return Dict{String,Any}(
+        "ok" => true,
+        "farm_id" => farm_id,
+        "version" => graph_version(farm_id),
+        "n_updated" => n_updated,
+    )
+end
+
+"""
+    get_graph_by_id(farm_id) -> Dict
+
+Return the full serialized graph state for a cached graph.
+Errors if the graph is not cached.
+"""
+function get_graph_by_id(farm_id::String)::Dict{String,Any}
+    graph = get_cached_graph(farm_id)
+    graph === nothing && error("get_graph_by_id: graph for farm '$farm_id' not cached")
+    state = serialize_graph(graph)
+    state["farm_id"] = farm_id
+    return state
+end
+
+"""
+    ensure_graph(farm_id) -> Dict
+
+Lightweight cache-presence check. Returns a small ack dict if the graph is
+cached, otherwise errors.
+"""
+function ensure_graph(farm_id::String)::Dict{String,Any}
+    graph = get_cached_graph(farm_id)
+    graph === nothing && error("ensure_graph: graph for farm '$farm_id' not cached — call build_graph first")
+    return Dict{String,Any}(
+        "ok" => true,
+        "farm_id" => farm_id,
+        "version" => graph_version(farm_id),
+        "cached" => true,
+    )
 end
 
 """

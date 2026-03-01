@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import json
+import logging
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
@@ -61,7 +61,8 @@ class IngestService:
     def __init__(self, db: AsyncSession, redis_client: Redis | None = None):
         self.db = db
         self.redis_client = redis_client
-        self._graph_state_cache: dict[str, Any] | None = None
+        self._graph_built: bool = False
+        self._logger = logging.getLogger(__name__)
 
     @staticmethod
     def normalize_layer(layer: str) -> str:
@@ -77,7 +78,8 @@ class IngestService:
         rows: list[SoilReading] = []
         event_details: list[dict[str, Any]] = []
         warnings: list[IngestWarning] = []
-        graph_state = await self._get_graph_state(farm_id)
+        pending_updates: list[dict[str, Any]] = []
+        await self._ensure_graph(farm_id)
 
         for idx, item in enumerate(readings):
             vertex = await self._require_vertex(item.sensor_id, farm_id, {VertexTypeEnum.sensor})
@@ -102,14 +104,11 @@ class IngestService:
                 float(item.conductivity or 0.0),
                 float(item.ph or 0.0),
             ]
-            graph_state = self._safe_graph_update(
-                graph_state,
-                "soil",
-                str(item.sensor_id),
-                features,
-                idx,
-                warnings,
-            )
+            pending_updates.append({
+                "layer": "soil",
+                "vertex_id": str(item.sensor_id),
+                "features": features,
+            })
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -122,7 +121,7 @@ class IngestService:
         await self.db.flush()
         event_ids = [int(row.id) for row in rows]
         await self._publish_events(farm_id, "soil", rows, event_details, warnings)
-        self._graph_state_cache = graph_state
+        self._safe_batch_update(str(farm_id), pending_updates, warnings)
         timestamp_start, timestamp_end = self._window_from_datetimes(
             [item.timestamp for item in readings]
         )
@@ -145,7 +144,8 @@ class IngestService:
         rows: list[WeatherReading] = []
         event_details: list[dict[str, Any]] = []
         warnings: list[IngestWarning] = []
-        graph_state = await self._get_graph_state(farm_id)
+        pending_updates: list[dict[str, Any]] = []
+        await self._ensure_graph(farm_id)
 
         for idx, item in enumerate(readings):
             vertex = await self._require_vertex(
@@ -171,14 +171,11 @@ class IngestService:
                 float(item.wind_speed or 0.0),
                 float(item.et0 or 0.0),
             ]
-            graph_state = self._safe_graph_update(
-                graph_state,
-                "weather",
-                str(item.station_id),
-                features,
-                idx,
-                warnings,
-            )
+            pending_updates.append({
+                "layer": "weather",
+                "vertex_id": str(item.station_id),
+                "features": features,
+            })
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -191,7 +188,7 @@ class IngestService:
         await self.db.flush()
         event_ids = [int(row.id) for row in rows]
         await self._publish_events(farm_id, "weather", rows, event_details, warnings)
-        self._graph_state_cache = graph_state
+        self._safe_batch_update(str(farm_id), pending_updates, warnings)
         timestamp_start, timestamp_end = self._window_from_datetimes(
             [item.timestamp for item in readings]
         )
@@ -216,7 +213,8 @@ class IngestService:
         rows: list[IrrigationEvent] = []
         event_details: list[dict[str, Any]] = []
         warnings: list[IngestWarning] = []
-        graph_state = await self._get_graph_state(farm_id)
+        pending_updates: list[dict[str, Any]] = []
+        await self._ensure_graph(farm_id)
 
         for idx, item in enumerate(events):
             vertex = await self._require_vertex(item.valve_id, farm_id, {VertexTypeEnum.valve})
@@ -243,14 +241,11 @@ class IngestService:
             valve_state = 1.0 if item.timestamp_end is None else 0.0
             features = [flow_rate, 0.0, valve_state]
 
-            graph_state = self._safe_graph_update(
-                graph_state,
-                "irrigation",
-                str(item.valve_id),
-                features,
-                idx,
-                warnings,
-            )
+            pending_updates.append({
+                "layer": "irrigation",
+                "vertex_id": str(item.valve_id),
+                "features": features,
+            })
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -263,7 +258,7 @@ class IngestService:
         await self.db.flush()
         event_ids = [int(row.id) for row in rows]
         await self._publish_events(farm_id, "irrigation", rows, event_details, warnings)
-        self._graph_state_cache = graph_state
+        self._safe_batch_update(str(farm_id), pending_updates, warnings)
         timestamps: list[datetime] = [item.timestamp_start for item in events]
         timestamps.extend(item.timestamp_end for item in events if item.timestamp_end is not None)
         timestamp_start, timestamp_end = self._window_from_datetimes(timestamps)
@@ -284,7 +279,8 @@ class IngestService:
         rows: list[NpkSample] = []
         event_details: list[dict[str, Any]] = []
         warnings: list[IngestWarning] = []
-        graph_state = await self._get_graph_state(farm_id)
+        pending_updates: list[dict[str, Any]] = []
+        await self._ensure_graph(farm_id)
 
         for idx, item in enumerate(samples):
             zone = await self._require_zone(item.zone_id, farm_id)
@@ -320,14 +316,11 @@ class IngestService:
                 float(item.phosphorus_mg_kg),
                 float(item.potassium_mg_kg),
             ]
-            graph_state = self._safe_graph_update(
-                graph_state,
-                "npk",
-                str(target_vertex.id),
-                features,
-                idx,
-                warnings,
-            )
+            pending_updates.append({
+                "layer": "npk",
+                "vertex_id": str(target_vertex.id),
+                "features": features,
+            })
             event_details.append(
                 {
                     "zone_id": str(item.zone_id),
@@ -340,7 +333,7 @@ class IngestService:
         await self.db.flush()
         event_ids = [int(row.id) for row in rows]
         await self._publish_events(farm_id, "npk", rows, event_details, warnings)
-        self._graph_state_cache = graph_state
+        self._safe_batch_update(str(farm_id), pending_updates, warnings)
         timestamp_start, timestamp_end = self._window_from_datetimes(
             [item.timestamp for item in samples]
         )
@@ -363,7 +356,8 @@ class IngestService:
         rows: list[VisionEvent] = []
         event_details: list[dict[str, Any]] = []
         warnings: list[IngestWarning] = []
-        graph_state = await self._get_graph_state(farm_id)
+        pending_updates: list[dict[str, Any]] = []
+        await self._ensure_graph(farm_id)
 
         for idx, item in enumerate(events):
             await self._require_vertex(item.camera_id, farm_id, {VertexTypeEnum.camera})
@@ -388,14 +382,11 @@ class IngestService:
                 anomaly_score,
                 0.0,
             ]
-            graph_state = self._safe_graph_update(
-                graph_state,
-                "vision",
-                str(item.camera_id),
-                features,
-                idx,
-                warnings,
-            )
+            pending_updates.append({
+                "layer": "vision",
+                "vertex_id": str(item.camera_id),
+                "features": features,
+            })
             event_details.append(
                 {
                     "zone_id": str(crop_bed_vertex.zone_id)
@@ -410,7 +401,7 @@ class IngestService:
         await self.db.flush()
         event_ids = [int(row.id) for row in rows]
         await self._publish_events(farm_id, "vision", rows, event_details, warnings)
-        self._graph_state_cache = graph_state
+        self._safe_batch_update(str(farm_id), pending_updates, warnings)
         timestamp_start, timestamp_end = self._window_from_datetimes(
             [item.timestamp for item in events]
         )
@@ -435,7 +426,8 @@ class IngestService:
         rows: list[LightingReading] = []
         event_details: list[dict[str, Any]] = []
         warnings: list[IngestWarning] = []
-        graph_state = await self._get_graph_state(farm_id)
+        pending_updates: list[dict[str, Any]] = []
+        await self._ensure_graph(farm_id)
 
         for idx, item in enumerate(readings):
             normalized = self.normalize_layer(item.layer)
@@ -460,14 +452,11 @@ class IngestService:
             rows.append(row)
 
             features = [float(item.par_umol), float(item.dli_cumulative), 0.0]
-            graph_state = self._safe_graph_update(
-                graph_state,
-                "lighting",
-                str(item.fixture_id),
-                features,
-                idx,
-                warnings,
-            )
+            pending_updates.append({
+                "layer": "lighting",
+                "vertex_id": str(item.fixture_id),
+                "features": features,
+            })
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -480,7 +469,7 @@ class IngestService:
         await self.db.flush()
         event_ids = [int(row.id) for row in rows]
         await self._publish_events(farm_id, "lighting", rows, event_details, warnings)
-        self._graph_state_cache = graph_state
+        self._safe_batch_update(str(farm_id), pending_updates, warnings)
         timestamp_start, timestamp_end = self._window_from_datetimes(
             [item.timestamp for item in readings]
         )
@@ -525,8 +514,6 @@ class IngestService:
             if not records:
                 continue
 
-            graph_snapshot = copy.deepcopy(await self._get_graph_state(farm_id))
-
             async with self.db.begin_nested():
                 try:
                     receipt = await handler(farm_id, records)
@@ -535,7 +522,6 @@ class IngestService:
                     total_failed += receipt.failed_count
                     aggregate_warnings.extend(receipt.warnings)
                 except Exception as exc:
-                    self._graph_state_cache = graph_snapshot
                     failed_count = len(records)
                     total_failed += failed_count
                     warning = IngestWarning(index=0, message=f"{layer} ingest failed: {exc}")
@@ -577,28 +563,29 @@ class IngestService:
             layers=layer_receipts,
         )
 
-    async def _get_graph_state(self, farm_id: uuid.UUID) -> dict[str, Any]:
-        if self._graph_state_cache is not None:
-            return self._graph_state_cache
-        self._graph_state_cache = await FarmService(self.db).get_graph(farm_id)
-        return self._graph_state_cache
+    async def _ensure_graph(self, farm_id: uuid.UUID) -> None:
+        """Build graph once per service instance to seed Julia cache."""
+        if self._graph_built:
+            return
+        await FarmService(self.db).get_graph(farm_id)
+        self._graph_built = True
 
-    def _safe_graph_update(
+    def _safe_batch_update(
         self,
-        graph_state: dict[str, Any],
-        layer: str,
-        vertex_id: str,
-        features: list[float],
-        index: int,
+        farm_id: str,
+        updates: list[dict[str, Any]],
         warnings: list[IngestWarning],
-    ) -> dict[str, Any]:
+    ) -> None:
+        """Send collected updates to Julia in one batch call."""
+        if not updates:
+            return
         try:
-            return julia_bridge.update_features(graph_state, layer, vertex_id, features)
+            julia_bridge.batch_update_features(farm_id, updates)
         except Exception as exc:
+            self._logger.warning("batch graph update failed for farm %s: %s", farm_id, exc)
             warnings.append(
-                IngestWarning(index=index, message=f"graph update failed for {layer}: {exc}")
+                IngestWarning(index=0, message=f"batch graph update failed: {exc}")
             )
-            return graph_state
 
     async def _require_farm(self, farm_id: uuid.UUID) -> Farm:
         row = await self.db.execute(select(Farm).where(Farm.id == farm_id))

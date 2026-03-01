@@ -124,7 +124,7 @@ async def test_irrigation_schedule_cache_behavior(monkeypatch: pytest.MonkeyPatc
 
     calls = {"count": 0}
 
-    def fake_schedule(_graph: dict[str, object], _horizon: int) -> list[dict[str, object]]:
+    def fake_schedule(_farm_id: str, _horizon: int) -> list[dict[str, object]]:
         calls["count"] += 1
         return [{"zone_id": str(uuid4()), "volume_liters": 120.0}]
 

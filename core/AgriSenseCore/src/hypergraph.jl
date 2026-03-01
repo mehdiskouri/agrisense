@@ -160,15 +160,20 @@ end
 """Module-level cache: farm_id → GPU-resident LayeredHyperGraph."""
 const GRAPH_CACHE = Dict{String, LayeredHyperGraph}()
 
+"""Module-level monotonic version counter per farm."""
+const GRAPH_VERSION = Dict{String, Int}()
+
 """
     cache_graph!(farm_id, graph) -> LayeredHyperGraph
 
 Store a graph in the cache. Automatically moves to GPU if `HAS_CUDA`.
+Increments the version counter for the farm.
 Returns the cached (possibly GPU-resident) graph.
 """
 function cache_graph!(farm_id::String, graph::LayeredHyperGraph)::LayeredHyperGraph
     gpu_graph = to_gpu(graph)
     GRAPH_CACHE[farm_id] = gpu_graph
+    GRAPH_VERSION[farm_id] = get(GRAPH_VERSION, farm_id, 0) + 1
     return gpu_graph
 end
 
@@ -182,6 +187,15 @@ function get_cached_graph(farm_id::String)::Union{LayeredHyperGraph, Nothing}
 end
 
 """
+    graph_version(farm_id) -> Int
+
+Return the current version counter for `farm_id`. Returns 0 if not cached.
+"""
+function graph_version(farm_id::String)::Int
+    return get(GRAPH_VERSION, farm_id, 0)
+end
+
+"""
     evict_graph!(farm_id) -> Bool
 
 Remove a graph from the cache. Returns `true` if it was present.
@@ -189,6 +203,7 @@ Remove a graph from the cache. Returns `true` if it was present.
 function evict_graph!(farm_id::String)::Bool
     had = haskey(GRAPH_CACHE, farm_id)
     delete!(GRAPH_CACHE, farm_id)
+    delete!(GRAPH_VERSION, farm_id)
     return had
 end
 
@@ -199,6 +214,7 @@ Remove all graphs from the cache.
 """
 function clear_cache!()
     empty!(GRAPH_CACHE)
+    empty!(GRAPH_VERSION)
     return nothing
 end
 

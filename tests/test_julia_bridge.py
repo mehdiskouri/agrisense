@@ -53,13 +53,17 @@ class _FakeModule:
         self.last_call = ("deserialize_graph", (graph_state,), {})
         return graph_state
 
+    def get_cached_graph(self, farm_id: str) -> dict[str, object]:
+        self.last_call = ("get_cached_graph", (farm_id,), {})
+        return {"farm_id": farm_id}
+
     def cross_layer_query(
         self,
-        graph_state: dict[str, object],
+        graph: dict[str, object],
         layer_a: object,
         layer_b: object,
     ) -> dict[str, object]:
-        self.last_call = ("cross_layer_query", (graph_state, layer_a, layer_b), {})
+        self.last_call = ("cross_layer_query", (graph, layer_a, layer_b), {})
         return {"layer_a": str(layer_a), "layer_b": str(layer_b), "connected": 1}
 
     def update_features(
@@ -70,7 +74,19 @@ class _FakeModule:
         features: list[float],
     ) -> dict[str, object]:
         self.last_call = ("update_features", (graph_state, layer, vertex_id, features), {})
-        return {"updated": True}
+        return {"ok": True, "farm_id": graph_state.get("farm_id", ""), "version": 1, "layer": layer, "vertex_id": vertex_id}
+
+    def batch_update_features(
+        self,
+        farm_id: str,
+        updates: list[dict[str, object]],
+    ) -> dict[str, object]:
+        self.last_call = ("batch_update_features", (farm_id, updates), {})
+        return {"ok": True, "farm_id": farm_id, "version": 1, "n_updated": len(updates)}
+
+    def ensure_graph(self, farm_id: str) -> dict[str, object]:
+        self.last_call = ("ensure_graph", (farm_id,), {})
+        return {"ok": True, "farm_id": farm_id, "cached": True}
 
     def train_yield_residual(
         self,
@@ -165,26 +181,35 @@ def test_wrapper_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(julia_bridge, "_agrisense_module", fake)
     monkeypatch.setattr(julia_bridge, "_jl_main", fake_main)
 
-    graph_state = {"farm_id": str(uuid4())}
+    farm_id = str(uuid4())
 
-    status = julia_bridge.query_farm_status(graph_state, "zone-1")
+    status = julia_bridge.query_farm_status(farm_id, "zone-1")
     assert status["zone"] == "zone-1"
 
-    schedule = julia_bridge.irrigation_schedule(graph_state, 7, {"rain": 0.0})
+    schedule = julia_bridge.irrigation_schedule(farm_id, 7, {"rain": 0.0})
     assert schedule[0]["ok"] is True
 
-    assert julia_bridge.nutrient_report(graph_state)[0]["nutrient"] == "ok"
-    assert julia_bridge.yield_forecast(graph_state)[0]["yield"] == "ok"
-    assert julia_bridge.detect_anomalies(graph_state)[0]["anomaly"] == "ok"
+    assert julia_bridge.nutrient_report(farm_id)[0]["nutrient"] == "ok"
+    assert julia_bridge.yield_forecast(farm_id)[0]["yield"] == "ok"
+    assert julia_bridge.detect_anomalies(farm_id)[0]["anomaly"] == "ok"
 
-    cross = julia_bridge.cross_layer_query(graph_state, "soil", "weather")
+    cross = julia_bridge.cross_layer_query(farm_id, "soil", "weather")
     assert cross["layer_a"] == ":soil"
     assert cross["layer_b"] == ":weather"
 
-    updated = julia_bridge.update_features(graph_state, "soil", "vertex-1", [0.1, 0.2])
-    assert updated["updated"] is True
+    updated = julia_bridge.update_features(farm_id, "soil", "vertex-1", [0.1, 0.2])
+    assert updated["ok"] is True
 
-    trained = julia_bridge.train_yield_residual(graph_state, {"vertex-1": 1.2})
+    batch_ack = julia_bridge.batch_update_features(farm_id, [
+        {"layer": "soil", "vertex_id": "v1", "features": [0.1]},
+        {"layer": "weather", "vertex_id": "v2", "features": [0.2]},
+    ])
+    assert batch_ack["n_updated"] == 2
+
+    ensure_ack = julia_bridge.ensure_graph_cached(farm_id)
+    assert ensure_ack["ok"] is True
+
+    trained = julia_bridge.train_yield_residual(farm_id, {"vertex-1": 1.2})
     assert trained["status"] == "trained"
 
     synthetic = julia_bridge.generate_synthetic("greenhouse", 10, 42)

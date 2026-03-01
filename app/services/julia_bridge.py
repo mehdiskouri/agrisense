@@ -124,11 +124,13 @@ def build_graph(farm_config: dict[str, Any]) -> dict[str, Any]:
         raise JuliaBridgeError(f"build_graph failed: {exc}") from exc
 
 
-def query_farm_status(graph_state: dict[str, Any], zone_id: str) -> dict[str, Any]:
+def query_farm_status(farm_id: str, zone_id: str) -> dict[str, Any]:
     start = time.perf_counter()
     module = _require_module()
     try:
-        result = module.query_farm_status(_to_plain(graph_state), str(zone_id))
+        result = module.query_farm_status(
+            {"farm_id": str(farm_id)}, str(zone_id),
+        )
         parsed = ensure_record(_from_julia(result), context="query_farm_status")
         _bridge_timing("query_farm_status", start, True)
         return parsed
@@ -138,7 +140,7 @@ def query_farm_status(graph_state: dict[str, Any], zone_id: str) -> dict[str, An
 
 
 def irrigation_schedule(
-    graph_state: dict[str, Any],
+    farm_id: str,
     horizon_days: int,
     weather_forecast: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -147,7 +149,7 @@ def irrigation_schedule(
     try:
         forecast = _to_plain(weather_forecast or {})
         result = module.irrigation_schedule(
-            _to_plain(graph_state),
+            {"farm_id": str(farm_id)},
             int(horizon_days),
             forecast,
         )
@@ -159,11 +161,11 @@ def irrigation_schedule(
         raise JuliaBridgeError(f"irrigation_schedule failed: {exc}") from exc
 
 
-def nutrient_report(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
+def nutrient_report(farm_id: str) -> list[dict[str, Any]]:
     start = time.perf_counter()
     module = _require_module()
     try:
-        result = module.nutrient_report(_to_plain(graph_state))
+        result = module.nutrient_report({"farm_id": str(farm_id)})
         parsed = ensure_record_list(_from_julia(result), context="nutrient_report")
         _bridge_timing("nutrient_report", start, True)
         return parsed
@@ -172,11 +174,11 @@ def nutrient_report(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
         raise JuliaBridgeError(f"nutrient_report failed: {exc}") from exc
 
 
-def yield_forecast(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
+def yield_forecast(farm_id: str) -> list[dict[str, Any]]:
     start = time.perf_counter()
     module = _require_module()
     try:
-        result = module.yield_forecast(_to_plain(graph_state))
+        result = module.yield_forecast({"farm_id": str(farm_id)})
         parsed = ensure_record_list(_from_julia(result), context="yield_forecast")
         _bridge_timing("yield_forecast", start, True)
         return parsed
@@ -185,11 +187,11 @@ def yield_forecast(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
         raise JuliaBridgeError(f"yield_forecast failed: {exc}") from exc
 
 
-def detect_anomalies(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
+def detect_anomalies(farm_id: str) -> list[dict[str, Any]]:
     start = time.perf_counter()
     module = _require_module()
     try:
-        result = module.detect_anomalies(_to_plain(graph_state))
+        result = module.detect_anomalies({"farm_id": str(farm_id)})
         parsed = ensure_record_list(_from_julia(result), context="detect_anomalies")
         _bridge_timing("detect_anomalies", start, True)
         return parsed
@@ -199,7 +201,7 @@ def detect_anomalies(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def cross_layer_query(
-    graph_state: dict[str, Any],
+    farm_id: str,
     layer_a: str,
     layer_b: str,
 ) -> dict[str, Any]:
@@ -208,29 +210,36 @@ def cross_layer_query(
     if _jl_main is None:
         raise JuliaBridgeError("cross_layer_query failed: Julia runtime is not initialized")
     try:
-        graph = module.deserialize_graph(_to_plain(graph_state))
+        graph = module.get_cached_graph(str(farm_id))
+        if graph is None:
+            raise JuliaBridgeError(
+                f"cross_layer_query failed: graph for farm '{farm_id}' not cached"
+            )
         layer_a_sym = _jl_main.Symbol(str(layer_a))
         layer_b_sym = _jl_main.Symbol(str(layer_b))
         result = module.cross_layer_query(graph, layer_a_sym, layer_b_sym)
         parsed = ensure_record(_from_julia(result), context="cross_layer_query")
         _bridge_timing("cross_layer_query", start, True)
         return parsed
+    except JuliaBridgeError:
+        raise
     except Exception as exc:
         _bridge_timing("cross_layer_query", start, False, str(exc))
         raise JuliaBridgeError(f"cross_layer_query failed: {exc}") from exc
 
 
 def update_features(
-    graph_state: dict[str, Any],
+    farm_id: str,
     layer: str,
     vertex_id: str,
     features: list[float],
 ) -> dict[str, Any]:
+    """Push features for a single vertex. Returns lightweight ack."""
     start = time.perf_counter()
     module = _require_module()
     try:
         result = module.update_features(
-            _to_plain(graph_state),
+            {"farm_id": str(farm_id)},
             str(layer),
             str(vertex_id),
             _to_plain(features),
@@ -243,14 +252,50 @@ def update_features(
         raise JuliaBridgeError(f"update_features failed: {exc}") from exc
 
 
+def batch_update_features(
+    farm_id: str,
+    updates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Batch push features for multiple vertices. Returns lightweight ack."""
+    start = time.perf_counter()
+    module = _require_module()
+    try:
+        result = module.batch_update_features(
+            str(farm_id),
+            _to_plain(updates),
+        )
+        parsed = ensure_record(_from_julia(result), context="batch_update_features")
+        _bridge_timing("batch_update_features", start, True)
+        return parsed
+    except Exception as exc:
+        _bridge_timing("batch_update_features", start, False, str(exc))
+        raise JuliaBridgeError(f"batch_update_features failed: {exc}") from exc
+
+
+def ensure_graph_cached(farm_id: str) -> dict[str, Any]:
+    """Check if graph is cached in Julia. Returns ack or raises."""
+    start = time.perf_counter()
+    module = _require_module()
+    try:
+        result = module.ensure_graph(str(farm_id))
+        parsed = ensure_record(_from_julia(result), context="ensure_graph")
+        _bridge_timing("ensure_graph", start, True)
+        return parsed
+    except Exception as exc:
+        _bridge_timing("ensure_graph", start, False, str(exc))
+        raise JuliaBridgeError(f"ensure_graph failed: {exc}") from exc
+
+
 def train_yield_residual(
-    graph_state: dict[str, Any],
+    farm_id: str,
     outcomes: dict[str, float],
 ) -> dict[str, Any]:
     start = time.perf_counter()
     module = _require_module()
     try:
-        result = module.train_yield_residual(_to_plain(graph_state), _to_plain(outcomes))
+        result = module.train_yield_residual(
+            {"farm_id": str(farm_id)}, _to_plain(outcomes),
+        )
         parsed = ensure_record(_from_julia(result), context="train_yield_residual")
         _bridge_timing("train_yield_residual", start, True)
         return parsed

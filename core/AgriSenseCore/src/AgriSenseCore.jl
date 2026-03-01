@@ -86,7 +86,8 @@ export build_graph, query_farm_status, irrigation_schedule
 export nutrient_report, yield_forecast, detect_anomalies
 export generate_synthetic
 export serialize_graph, deserialize_graph
-export update_features, train_yield_residual
+export update_features, batch_update_features, train_yield_residual
+export get_graph_by_id, ensure_graph
 
 # Model internals (for testing / advanced use)
 export compute_irrigation_schedule, compute_nutrient_report
@@ -102,7 +103,8 @@ export get_backend, get_array_type, HAS_CUDA
 export array_backend, launch_kernel!, ensure_cpu
 
 # Graph cache
-export GRAPH_CACHE, cache_graph!, get_cached_graph, evict_graph!, clear_cache!
+export GRAPH_CACHE, GRAPH_VERSION, cache_graph!, get_cached_graph
+export evict_graph!, clear_cache!, graph_version
 
 # GPU kernels (for testing / advanced use)
 export fao_yield_kernel!, nutrient_stress_kernel!, weather_stress_kernel!

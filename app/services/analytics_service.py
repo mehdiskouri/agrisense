@@ -36,15 +36,22 @@ class AnalyticsService:
         self.db = db
         self.redis_client = redis_client
 
+    async def _ensure_graph(self, farm_id: uuid.UUID) -> None:
+        """Ensure graph is built and cached in Julia for this farm."""
+        try:
+            julia_bridge.ensure_graph_cached(str(farm_id))
+        except Exception:
+            await FarmService(self.db).get_graph(farm_id)
+
     async def get_farm_status(self, farm_id: uuid.UUID) -> FarmStatusResponse:
         farm_service = FarmService(self.db)
         farm = await farm_service.get_farm(farm_id)
-        graph_state = await farm_service.get_graph(farm_id)
+        await self._ensure_graph(farm_id)
 
         zones: list[ZoneStatus] = []
         for zone in farm.zones:
             query_vertex = await farm_service.resolve_zone_query_vertex_id(farm_id, zone.id)
-            status = julia_bridge.query_farm_status(graph_state, query_vertex)
+            status = julia_bridge.query_farm_status(str(farm_id), query_vertex)
             zones.append(
                 ZoneStatus(
                     zone_id=zone.id,
@@ -64,9 +71,7 @@ class AnalyticsService:
     ) -> ZoneDetailResponse:
         farm_service = FarmService(self.db)
         await farm_service.get_farm(farm_id)
-        graph_state = await farm_service.get_graph(farm_id)
-
-        zone_id = query.zone_id
+        await self._ensure_graph(farm_id)
         if query.vertex_id is not None:
             vertex = await self._require_vertex(query.vertex_id, farm_id)
             query_vertex_id = vertex.id
@@ -78,8 +83,8 @@ class AnalyticsService:
                 await farm_service.resolve_zone_query_vertex_id(farm_id, zone_id)
             )
 
-        layers = julia_bridge.query_farm_status(graph_state, str(query_vertex_id))
-        cross_layer = await self._build_cross_layer(graph_state, farm_id, query_vertex_id)
+        layers = julia_bridge.query_farm_status(str(farm_id), str(query_vertex_id))
+        cross_layer = await self._build_cross_layer(farm_id, query_vertex_id)
 
         return ZoneDetailResponse(
             farm_id=farm_id,
@@ -108,8 +113,8 @@ class AnalyticsService:
                     items=payload,
                 )
 
-        graph_state = await farm_service.get_graph(farm_id)
-        items = julia_bridge.irrigation_schedule(graph_state, horizon_days)
+        await self._ensure_graph(farm_id)
+        items = julia_bridge.irrigation_schedule(str(farm_id), horizon_days)
 
         if self.redis_client is not None:
             await self.redis_client.setex(cache_key, 900, json.dumps(items))
@@ -125,24 +130,24 @@ class AnalyticsService:
     async def get_nutrient_report(self, farm_id: uuid.UUID) -> NutrientReportResponse:
         farm_service = FarmService(self.db)
         await farm_service.get_farm(farm_id)
-        graph_state = await farm_service.get_graph(farm_id)
-        items = julia_bridge.nutrient_report(graph_state)
+        await self._ensure_graph(farm_id)
+        items = julia_bridge.nutrient_report(str(farm_id))
         return NutrientReportResponse(farm_id=farm_id, generated_at=datetime.now(UTC), items=items)
 
     async def get_yield_forecast(self, farm_id: uuid.UUID) -> YieldForecastResponse:
         farm_service = FarmService(self.db)
         await farm_service.get_farm(farm_id)
-        graph_state = await farm_service.get_graph(farm_id)
-        items = julia_bridge.yield_forecast(graph_state)
+        await self._ensure_graph(farm_id)
+        items = julia_bridge.yield_forecast(str(farm_id))
         return YieldForecastResponse(farm_id=farm_id, generated_at=datetime.now(UTC), items=items)
 
     async def get_active_alerts(self, farm_id: uuid.UUID) -> AlertsResponse:
         farm_service = FarmService(self.db)
         farm = await farm_service.get_farm(farm_id)
-        graph_state = await farm_service.get_graph(farm_id)
+        await self._ensure_graph(farm_id)
 
-        anomalies = julia_bridge.detect_anomalies(graph_state)
-        nutrients = julia_bridge.nutrient_report(graph_state)
+        anomalies = julia_bridge.detect_anomalies(str(farm_id))
+        nutrients = julia_bridge.nutrient_report(str(farm_id))
 
         zone_index = await self._zone_vertex_index(farm_id)
         zone_alert_map: dict[uuid.UUID | None, list[AlertItem]] = defaultdict(list)
@@ -191,7 +196,6 @@ class AnalyticsService:
 
     async def _build_cross_layer(
         self,
-        graph_state: dict[str, Any],
         farm_id: uuid.UUID,
         query_vertex_id: uuid.UUID,
     ) -> list[CrossLayerLink]:
@@ -207,7 +211,7 @@ class AnalyticsService:
         result: list[CrossLayerLink] = []
         for idx, layer_a in enumerate(ordered_layers):
             for layer_b in ordered_layers[idx + 1 :]:
-                data = julia_bridge.cross_layer_query(graph_state, layer_a, layer_b)
+                data = julia_bridge.cross_layer_query(str(farm_id), layer_a, layer_b)
                 result.append(
                     CrossLayerLink(
                         layer_a=layer_a,

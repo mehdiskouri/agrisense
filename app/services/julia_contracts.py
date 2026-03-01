@@ -27,11 +27,14 @@ class CrossLayerResult(TypedDict, total=False):
 
 
 class UpdateFeaturesResponse(TypedDict, total=False):
-    """Result shape for post-update graph state mutation."""
+    """Lightweight ack returned by update_features / batch_update_features."""
 
     ok: bool
-    message: str
-    graph_state: dict[str, Any]
+    farm_id: str
+    version: int
+    layer: str
+    vertex_id: str
+    n_updated: int
 
 
 class TrainYieldResidualResponse(TypedDict, total=False):
