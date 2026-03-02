@@ -170,6 +170,7 @@ jobs:
             -e DATABASE_URL=postgresql+asyncpg://agrisense:agrisense@agrisense-ci-postgres:5432/agrisense_test \
             -e REDIS_URL=redis://agrisense-ci-redis:6379/0 \
             -e JWT_SECRET=test-secret-key \
+            -e BOOTSTRAP_GRAPH_CACHE_ON_STARTUP=false \
             -e ANTHROPIC_API_KEY=sk-ant-test \
             agrisense:ci-cpu
 
