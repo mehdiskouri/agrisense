@@ -166,6 +166,14 @@ jobs:
             sleep 2
           done
 
+          # Wait for redis to be ready
+          for _ in $(seq 1 30); do
+            if docker exec agrisense-ci-redis redis-cli ping >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
           docker run -d --rm --name agrisense-ci-api --network agrisense-ci-net -p 8000:8000 \
             -e DATABASE_URL=postgresql+asyncpg://agrisense:agrisense@agrisense-ci-postgres:5432/agrisense_test \
             -e REDIS_URL=redis://agrisense-ci-redis:6379/0 \
@@ -174,12 +182,20 @@ jobs:
             -e ANTHROPIC_API_KEY=sk-ant-test \
             agrisense:ci-cpu
 
-          for _ in $(seq 1 60); do
+          ready=false
+          for _ in $(seq 1 180); do
             if curl -fsS http://localhost:8000/health >/dev/null; then
+              ready=true
               break
             fi
             sleep 2
           done
+
+          if [ "$ready" != "true" ]; then
+            docker logs agrisense-ci-api --tail 300 || true
+            docker ps -a || true
+            exit 1
+          fi
 
           curl -fsS http://localhost:8000/health
           curl -fsS http://localhost:8000/health/ready
