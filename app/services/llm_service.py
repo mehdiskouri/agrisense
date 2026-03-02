@@ -178,13 +178,17 @@ class LLMService:
             for item in sources_raw:
                 if not isinstance(item, dict):
                     continue
+                payload_raw = item.get("payload")
+                payload: dict[str, Any]
+                if isinstance(payload_raw, dict):
+                    payload = {str(key): value for key, value in payload_raw.items()}
+                else:
+                    payload = {}
                 sources.append(
                     AskSource(
                         layer=str(item.get("layer") or intent),
                         reference=str(item.get("reference") or f"farm:{farm_id}:{intent}"),
-                        payload=item.get("payload")
-                        if isinstance(item.get("payload"), dict)
-                        else {},
+                        payload=payload,
                     )
                 )
         if not sources:

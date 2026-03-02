@@ -1,0 +1,31 @@
+# VCS
+.git
+.github
+.gitignore
+
+# Python
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+
+# Build artifacts
+build
+dist
+*.egg-info
+
+# Local env/runtime
+.env
+.env.*
+*.log
+
+# Editor/OS
+.vscode
+.idea
+.DS_Store
+
+# Runtime data
+pgdata

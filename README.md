@@ -81,6 +81,22 @@ docker compose up --build
 # Readiness checks at http://localhost:8000/health/ready
 ```
 
+Compose flow runs migrations before API startup and gates seed execution on API readiness.
+
+### Running inside an existing container (e.g., Vast.ai template)
+
+If you are already inside a containerized workspace, the `docker` daemon/CLI may be unavailable inside that shell.
+
+- Run `docker compose` from the host environment that has Docker daemon access.
+- Or use local development mode directly inside the workspace container:
+
+```bash
+make install
+make migrate
+make seed
+make dev
+```
+
 ### Development (local)
 
 ```bash
@@ -112,10 +128,21 @@ AgriSense uses **Julia + CUDA.jl + KernelAbstractions.jl** for GPU acceleration.
 |---|---|
 | **Local with NVIDIA GPU** | Automatically detects and uses CUDA |
 | **Docker with `--gpus all`** | GPU pass-through via nvidia-container-toolkit |
-| **CI (GitHub Actions)** | Falls back to CPU — all tests pass without GPU |
+| **CI (GitHub Actions CPU lane)** | Falls back to CPU — all tests pass without GPU |
+| **CI (Dedicated GPU lane)** | Runs GPU-focused Julia tests on GPU runner via manual `workflow_dispatch` (`enable_gpu_ci=true`) |
 | **No GPU available** | KernelAbstractions dispatches to `CPU()` backend |
 
-To enable GPU in Docker Compose, uncomment the `deploy.resources` block in `docker-compose.yml`.
+Container targets:
+
+```bash
+# CPU runtime image (default)
+docker build --target runtime-cpu -t agrisense:cpu .
+
+# GPU runtime image
+docker build --target runtime-gpu -t agrisense:gpu .
+```
+
+For compose GPU execution, switch `api.build.target` to `runtime-gpu` and enable `gpus: all` in `docker-compose.yml`.
 
 ---
 
@@ -164,8 +191,8 @@ To enable GPU in Docker Compose, uncomment the `deploy.resources` block in `dock
 
 | Component | Technology |
 |---|---|
-| API Framework | FastAPI (Python 3.12) |
-| Compute Core | Julia 1.11 + CUDA.jl + KernelAbstractions.jl |
+| API Framework | FastAPI (Python 3.13) |
+| Compute Core | Julia 1.12 + CUDA.jl + KernelAbstractions.jl |
 | Database | PostgreSQL 16 + PostGIS |
 | Cache / PubSub | Redis 7 |
 | ORM | SQLAlchemy 2.0 (async) + Alembic |
@@ -215,6 +242,12 @@ MIT
 
 ---
 
+## Contributing
+
+See `CONTRIBUTING.md` for GPU development setup, Julia bridge architecture, and procedures for adding new hypergraph layers and predictive models.
+
+---
+
 ## Live Deployment
 
-Live API URL: `TBD` (Phase 10 deployment target)
+Live API URL: `TBD`

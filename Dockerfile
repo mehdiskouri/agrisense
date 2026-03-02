@@ -1,8 +1,8 @@
 # ============================================================================
 # AgriSense — Multi-stage Dockerfile
-# Stage 1: Julia precompilation (cached layer)
-# Stage 2: Python dependencies (cached layer)
-# Stage 3: Runtime — Python 3.13 + Julia 1.12 + CUDA-ready
+# Targets:
+#   - runtime-cpu (default): CPU-first runtime
+#   - runtime-gpu: GPU-enabled runtime (host must provide GPU runtime)
 # ============================================================================
 
 # ── Stage 1: Julia dependency precompilation ────────────────────────────────
@@ -10,6 +10,7 @@ FROM julia:1.12-bookworm AS julia-deps
 
 WORKDIR /julia-build
 COPY core/AgriSenseCore/Project.toml core/AgriSenseCore/Project.toml
+COPY core/AgriSenseCore/Manifest.toml core/AgriSenseCore/Manifest.toml
 
 # Instantiate deps (downloads packages, creates Manifest.toml)
 RUN julia --project=core/AgriSenseCore -e ' \
@@ -26,11 +27,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir --prefix=/install .
 
-# ── Stage 3: Runtime ────────────────────────────────────────────────────────
-FROM python:3.13-slim-bookworm AS runtime
+# ── Stage 3: Runtime base ───────────────────────────────────────────────────
+FROM python:3.13-slim-bookworm AS runtime-base
 
 # Metadata
 LABEL maintainer="Mehdi Skouri"
@@ -61,11 +62,8 @@ COPY . .
 # Julia project setup: point to our package + precompile in final image
 ENV JULIA_PROJECT=/app/core/AgriSenseCore
 ENV JULIA_NUM_THREADS=auto
-RUN julia --project=core/AgriSenseCore -e ' \
-    using Pkg; \
-    Pkg.instantiate(); \
-    Pkg.precompile(); \
-'
+# Precompile is performed in the julia-deps stage; do a lightweight runtime sanity check only.
+RUN julia --version
 
 # Runtime config
 ENV PYTHONUNBUFFERED=1
@@ -78,3 +76,17 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 
 # Run with uvicorn
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+
+# ── Stage 4a: CPU runtime target (default target) ──────────────────────────
+FROM runtime-base AS runtime-cpu
+LABEL org.opencontainers.image.title="agrisense-cpu"
+LABEL org.opencontainers.image.description="AgriSense API CPU runtime"
+ENV AGRISENSE_RUNTIME_VARIANT=cpu
+
+# ── Stage 4b: GPU runtime target ────────────────────────────────────────────
+FROM runtime-base AS runtime-gpu
+LABEL org.opencontainers.image.title="agrisense-gpu"
+LABEL org.opencontainers.image.description="AgriSense API GPU runtime"
+ENV AGRISENSE_RUNTIME_VARIANT=gpu
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility

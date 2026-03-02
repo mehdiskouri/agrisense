@@ -40,6 +40,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime-cpu
     ports:
       - "8000:8000"
     env_file:
@@ -52,20 +53,42 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 90s
     # Uncomment below for GPU pass-through (requires nvidia-container-toolkit)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    # build:
+    #   target: runtime-gpu
+    # gpus: all
+
+  # ── DB Migration (one-shot, required before API/seed) ───────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime-cpu
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agrisense:agrisense@postgres:5432/agrisense
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   # ── Seed (one-shot) ─────────────────────────────────────────────────────
   seed:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime-cpu
     command: ["python", "scripts/seed_db.py"]
     env_file:
       - .env
@@ -74,9 +97,11 @@ services:
       REDIS_URL: redis://redis:6379/0
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: "no"
 
 volumes:

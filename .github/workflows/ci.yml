@@ -9,6 +9,12 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      enable_gpu_ci:
+        description: "Run dedicated GPU CI lane"
+        required: false
+        default: "false"
 
 env:
   PYTHON_VERSION: "3.13"
@@ -37,7 +43,6 @@ jobs:
 
       - name: Mypy
         run: mypy app/
-        continue-on-error: true  # strict mode may flag stubs initially
 
   # ── Python Tests ─────────────────────────────────────────────────────────
   python-test:
@@ -124,6 +129,81 @@ jobs:
         with:
           context: .
           push: false
-          tags: agrisense:ci
+          load: true
+          target: runtime-cpu
+          tags: agrisense:ci-cpu
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build GPU target image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          target: runtime-gpu
+          tags: agrisense:ci-gpu
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container smoke test (CPU image)
+        run: |
+          set -euo pipefail
+          docker network create agrisense-ci-net
+          docker run -d --rm --name agrisense-ci-postgres --network agrisense-ci-net \
+            -e POSTGRES_DB=agrisense_test \
+            -e POSTGRES_USER=agrisense \
+            -e POSTGRES_PASSWORD=agrisense \
+            postgis/postgis:16-3.4
+          docker run -d --rm --name agrisense-ci-redis --network agrisense-ci-net \
+            redis:7-alpine
+
+          # Wait for postgres to be ready
+          for _ in $(seq 1 30); do
+            if docker exec agrisense-ci-postgres pg_isready -U agrisense -d agrisense_test >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          docker run -d --rm --name agrisense-ci-api --network agrisense-ci-net -p 8000:8000 \
+            -e DATABASE_URL=postgresql+asyncpg://agrisense:agrisense@agrisense-ci-postgres:5432/agrisense_test \
+            -e REDIS_URL=redis://agrisense-ci-redis:6379/0 \
+            -e JWT_SECRET=test-secret-key \
+            -e ANTHROPIC_API_KEY=sk-ant-test \
+            agrisense:ci-cpu
+
+          for _ in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          curl -fsS http://localhost:8000/health
+          curl -fsS http://localhost:8000/health/ready
+
+          docker logs agrisense-ci-api --tail 200
+          docker stop agrisense-ci-api agrisense-ci-redis agrisense-ci-postgres
+
+  # ── Julia GPU Tests (dedicated GPU runner lane) ─────────────────────────
+  julia-gpu-test:
+    name: Julia GPU Tests
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_gpu_ci == 'true' }}
+    runs-on: [self-hosted, linux, x64, gpu, nvidia]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ env.JULIA_VERSION }}
+
+      - uses: julia-actions/cache@v2
+        with:
+          cache-name: "julia-agrisensecore-gpu"
+
+      - name: Instantiate Julia project
+        run: julia --project=core/AgriSenseCore -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run Julia GPU-focused tests
+        run: julia --project=core/AgriSenseCore test/test_gpu.jl
