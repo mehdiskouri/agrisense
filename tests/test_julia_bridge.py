@@ -206,10 +206,13 @@ def test_wrapper_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
     updated = julia_bridge.update_features(farm_id, "soil", "vertex-1", [0.1, 0.2])
     assert updated["ok"] is True
 
-    batch_ack = julia_bridge.batch_update_features(farm_id, [
-        {"layer": "soil", "vertex_id": "v1", "features": [0.1]},
-        {"layer": "weather", "vertex_id": "v2", "features": [0.2]},
-    ])
+    batch_ack = julia_bridge.batch_update_features(
+        farm_id,
+        [
+            {"layer": "soil", "vertex_id": "v1", "features": [0.1]},
+            {"layer": "weather", "vertex_id": "v2", "features": [0.2]},
+        ],
+    )
     assert batch_ack["n_updated"] == 2
 
     ensure_ack = julia_bridge.ensure_graph_cached(farm_id)

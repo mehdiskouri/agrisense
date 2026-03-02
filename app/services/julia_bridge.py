@@ -129,7 +129,8 @@ def query_farm_status(farm_id: str, zone_id: str) -> dict[str, Any]:
     module = _require_module()
     try:
         result = module.query_farm_status(
-            {"farm_id": str(farm_id)}, str(zone_id),
+            {"farm_id": str(farm_id)},
+            str(zone_id),
         )
         parsed = ensure_record(_from_julia(result), context="query_farm_status")
         _bridge_timing("query_farm_status", start, True)
@@ -294,7 +295,8 @@ def train_yield_residual(
     module = _require_module()
     try:
         result = module.train_yield_residual(
-            {"farm_id": str(farm_id)}, _to_plain(outcomes),
+            {"farm_id": str(farm_id)},
+            _to_plain(outcomes),
         )
         parsed = ensure_record(_from_julia(result), context="train_yield_residual")
         _bridge_timing("train_yield_residual", start, True)

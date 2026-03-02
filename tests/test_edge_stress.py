@@ -487,9 +487,7 @@ class TestIngestEndpoints:
         farm_id = uuid.uuid4()
 
         async def fake(self: IngestService, _fid: object, _samples: object) -> IngestReceipt:
-            return IngestReceipt(
-                farm_id=farm_id, layer="npk", status="ok", inserted_count=2
-            )
+            return IngestReceipt(farm_id=farm_id, layer="npk", status="ok", inserted_count=2)
 
         monkeypatch.setattr(IngestService, "ingest_npk", fake)
         resp = await client.post(
@@ -519,9 +517,7 @@ class TestIngestEndpoints:
         farm_id = uuid.uuid4()
 
         async def fake(self: IngestService, _fid: object, _events: object) -> IngestReceipt:
-            return IngestReceipt(
-                farm_id=farm_id, layer="vision", status="ok", inserted_count=1
-            )
+            return IngestReceipt(farm_id=farm_id, layer="vision", status="ok", inserted_count=1)
 
         monkeypatch.setattr(IngestService, "ingest_vision", fake)
         resp = await client.post(
@@ -797,9 +793,7 @@ class TestIngestEndpoints:
         farm_id = uuid.uuid4()
 
         async def fake(self: IngestService, _fid: object, **kw: object) -> BulkIngestReceipt:
-            return BulkIngestReceipt(
-                farm_id=farm_id, status="ok", inserted_count=0, failed_count=0
-            )
+            return BulkIngestReceipt(farm_id=farm_id, status="ok", inserted_count=0, failed_count=0)
 
         monkeypatch.setattr(IngestService, "ingest_bulk", fake)
         resp = await client.post(
@@ -986,9 +980,7 @@ class TestAnalyticsEndpoints:
             )
 
         monkeypatch.setattr(AnalyticsService, "get_irrigation_schedule", fake)
-        resp = await client.get(
-            f"/api/v1/analytics/{farm_id}/irrigation/schedule?horizon_days=1"
-        )
+        resp = await client.get(f"/api/v1/analytics/{farm_id}/irrigation/schedule?horizon_days=1")
         assert resp.status_code == 200
         assert resp.json()["horizon_days"] == 1
 
@@ -1010,34 +1002,26 @@ class TestAnalyticsEndpoints:
             )
 
         monkeypatch.setattr(AnalyticsService, "get_irrigation_schedule", fake)
-        resp = await client.get(
-            f"/api/v1/analytics/{farm_id}/irrigation/schedule?horizon_days=30"
-        )
+        resp = await client.get(f"/api/v1/analytics/{farm_id}/irrigation/schedule?horizon_days=30")
         assert resp.status_code == 200
         assert resp.json()["horizon_days"] == 30
 
     @pytest.mark.asyncio
-    async def test_irrigation_schedule_horizon_below_min_422(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_irrigation_schedule_horizon_below_min_422(self, client: AsyncClient) -> None:
         resp = await client.get(
             f"/api/v1/analytics/{uuid.uuid4()}/irrigation/schedule?horizon_days=0"
         )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_irrigation_schedule_horizon_above_max_422(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_irrigation_schedule_horizon_above_max_422(self, client: AsyncClient) -> None:
         resp = await client.get(
             f"/api/v1/analytics/{uuid.uuid4()}/irrigation/schedule?horizon_days=31"
         )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_irrigation_schedule_horizon_negative_422(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_irrigation_schedule_horizon_negative_422(self, client: AsyncClient) -> None:
         resp = await client.get(
             f"/api/v1/analytics/{uuid.uuid4()}/irrigation/schedule?horizon_days=-1"
         )
@@ -1050,9 +1034,7 @@ class TestAnalyticsEndpoints:
 
     @pytest.mark.asyncio
     async def test_analytics_zone_detail_non_uuid_422(self, client: AsyncClient) -> None:
-        resp = await client.get(
-            f"/api/v1/analytics/{uuid.uuid4()}/zones/not-a-uuid"
-        )
+        resp = await client.get(f"/api/v1/analytics/{uuid.uuid4()}/zones/not-a-uuid")
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
@@ -1097,9 +1079,7 @@ class TestAnalyticsEndpoints:
             raise LookupError("farm gone")
 
         monkeypatch.setattr(AnalyticsService, "get_irrigation_schedule", boom)
-        resp = await client.get(
-            f"/api/v1/analytics/{uuid.uuid4()}/irrigation/schedule"
-        )
+        resp = await client.get(f"/api/v1/analytics/{uuid.uuid4()}/irrigation/schedule")
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
@@ -1110,9 +1090,7 @@ class TestAnalyticsEndpoints:
             raise RuntimeError("nutrient boom")
 
         monkeypatch.setattr(AnalyticsService, "get_nutrient_report", boom)
-        resp = await client.get(
-            f"/api/v1/analytics/{uuid.uuid4()}/nutrients/report"
-        )
+        resp = await client.get(f"/api/v1/analytics/{uuid.uuid4()}/nutrients/report")
         assert resp.status_code == 500
 
     @pytest.mark.asyncio
@@ -1156,9 +1134,7 @@ class TestAnalyticsEndpoints:
             raise LookupError("zone not found")
 
         monkeypatch.setattr(AnalyticsService, "get_zone_detail", boom)
-        resp = await client.get(
-            f"/api/v1/analytics/{uuid.uuid4()}/zones/{uuid.uuid4()}"
-        )
+        resp = await client.get(f"/api/v1/analytics/{uuid.uuid4()}/zones/{uuid.uuid4()}")
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
@@ -1169,9 +1145,7 @@ class TestAnalyticsEndpoints:
             raise LookupError("vertex not found")
 
         monkeypatch.setattr(AnalyticsService, "get_zone_detail", boom)
-        resp = await client.get(
-            f"/api/v1/analytics/{uuid.uuid4()}/vertices/{uuid.uuid4()}"
-        )
+        resp = await client.get(f"/api/v1/analytics/{uuid.uuid4()}/vertices/{uuid.uuid4()}")
         assert resp.status_code == 404
 
 
@@ -1520,9 +1494,7 @@ class TestAuthEdgeCases:
             decode_token("aaa.bbb.ccc", expected_type="access")
 
     @pytest.mark.asyncio
-    async def test_missing_auth_on_farms_create_401(
-        self, auth_client: AsyncClient
-    ) -> None:
+    async def test_missing_auth_on_farms_create_401(self, auth_client: AsyncClient) -> None:
         resp = await auth_client.post(
             "/api/v1/farms",
             json={"name": "F", "farm_type": "greenhouse"},
@@ -1561,9 +1533,7 @@ class TestAuthEdgeCases:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_readonly_cannot_create_zone_403(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_readonly_cannot_create_zone_403(self, client: AsyncClient) -> None:
         async def _readonly_user() -> object:
             return SimpleNamespace(
                 id=uuid.uuid4(),
@@ -1580,9 +1550,7 @@ class TestAuthEdgeCases:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_readonly_cannot_register_sensor_403(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_readonly_cannot_register_sensor_403(self, client: AsyncClient) -> None:
         async def _readonly_user() -> object:
             return SimpleNamespace(
                 id=uuid.uuid4(),
@@ -1599,9 +1567,7 @@ class TestAuthEdgeCases:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_field_operator_cannot_create_farm_403(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_field_operator_cannot_create_farm_403(self, client: AsyncClient) -> None:
         async def _field_op() -> object:
             return SimpleNamespace(
                 id=uuid.uuid4(),
@@ -1681,9 +1647,7 @@ class TestAuthEdgeCases:
         app.dependency_overrides[get_current_user] = _readonly_user
 
         async def fake_status(self: AnalyticsService, _fid: object) -> FarmStatusResponse:
-            return FarmStatusResponse(
-                farm_id=uuid.uuid4(), generated_at=_NOW, zones=[]
-            )
+            return FarmStatusResponse(farm_id=uuid.uuid4(), generated_at=_NOW, zones=[])
 
         monkeypatch.setattr(AnalyticsService, "get_farm_status", fake_status)
 
@@ -1912,9 +1876,7 @@ class TestSystemCrossCutting:
 
     @pytest.mark.asyncio
     async def test_custom_request_id_echoed(self, client: AsyncClient) -> None:
-        resp = await client.get(
-            "/health", headers={"x-request-id": "custom-123"}
-        )
+        resp = await client.get("/health", headers={"x-request-id": "custom-123"})
         assert resp.headers.get("x-request-id") == "custom-123"
 
     @pytest.mark.asyncio
@@ -2103,15 +2065,11 @@ class TestStress:
         farm_id = uuid.uuid4()
 
         async def fake_status(self: AnalyticsService, _fid: object) -> FarmStatusResponse:
-            return FarmStatusResponse(
-                farm_id=farm_id, generated_at=_NOW, zones=[]
-            )
+            return FarmStatusResponse(farm_id=farm_id, generated_at=_NOW, zones=[])
 
         monkeypatch.setattr(AnalyticsService, "get_farm_status", fake_status)
 
-        tasks = [
-            client.get(f"/api/v1/analytics/{farm_id}/status") for _ in range(50)
-        ]
+        tasks = [client.get(f"/api/v1/analytics/{farm_id}/status") for _ in range(50)]
         responses = await asyncio.gather(*tasks)
         for resp in responses:
             assert resp.status_code == 200
@@ -2123,9 +2081,7 @@ class TestStress:
         """Bulk ingest with 100 soil readings — verify it processes."""
         farm_id = uuid.uuid4()
 
-        async def fake_bulk(
-            self: IngestService, _fid: object, **kw: object
-        ) -> BulkIngestReceipt:
+        async def fake_bulk(self: IngestService, _fid: object, **kw: object) -> BulkIngestReceipt:
             return BulkIngestReceipt(
                 farm_id=farm_id, status="ok", inserted_count=100, failed_count=0
             )
@@ -2159,16 +2115,10 @@ class TestStress:
         farm_id = uuid.uuid4()
 
         async def fake_soil(self: IngestService, _fid: object, _r: object) -> IngestReceipt:
-            return IngestReceipt(
-                farm_id=farm_id, layer="soil", status="ok", inserted_count=1
-            )
+            return IngestReceipt(farm_id=farm_id, layer="soil", status="ok", inserted_count=1)
 
-        async def fake_weather(
-            self: IngestService, _fid: object, _r: object
-        ) -> IngestReceipt:
-            return IngestReceipt(
-                farm_id=farm_id, layer="weather", status="ok", inserted_count=1
-            )
+        async def fake_weather(self: IngestService, _fid: object, _r: object) -> IngestReceipt:
+            return IngestReceipt(farm_id=farm_id, layer="weather", status="ok", inserted_count=1)
 
         monkeypatch.setattr(IngestService, "ingest_soil", fake_soil)
         monkeypatch.setattr(IngestService, "ingest_weather", fake_weather)
@@ -2219,9 +2169,7 @@ class TestStress:
             return []
 
         async def fake_status(self: AnalyticsService, _fid: object) -> FarmStatusResponse:
-            return FarmStatusResponse(
-                farm_id=farm_id, generated_at=_NOW, zones=[]
-            )
+            return FarmStatusResponse(farm_id=farm_id, generated_at=_NOW, zones=[])
 
         monkeypatch.setattr(FarmService, "list_farms", fake_list)
         monkeypatch.setattr(AnalyticsService, "get_farm_status", fake_status)

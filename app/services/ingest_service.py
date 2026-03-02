@@ -104,11 +104,13 @@ class IngestService:
                 float(item.conductivity or 0.0),
                 float(item.ph or 0.0),
             ]
-            pending_updates.append({
-                "layer": "soil",
-                "vertex_id": str(item.sensor_id),
-                "features": features,
-            })
+            pending_updates.append(
+                {
+                    "layer": "soil",
+                    "vertex_id": str(item.sensor_id),
+                    "features": features,
+                }
+            )
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -171,11 +173,13 @@ class IngestService:
                 float(item.wind_speed or 0.0),
                 float(item.et0 or 0.0),
             ]
-            pending_updates.append({
-                "layer": "weather",
-                "vertex_id": str(item.station_id),
-                "features": features,
-            })
+            pending_updates.append(
+                {
+                    "layer": "weather",
+                    "vertex_id": str(item.station_id),
+                    "features": features,
+                }
+            )
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -241,11 +245,13 @@ class IngestService:
             valve_state = 1.0 if item.timestamp_end is None else 0.0
             features = [flow_rate, 0.0, valve_state]
 
-            pending_updates.append({
-                "layer": "irrigation",
-                "vertex_id": str(item.valve_id),
-                "features": features,
-            })
+            pending_updates.append(
+                {
+                    "layer": "irrigation",
+                    "vertex_id": str(item.valve_id),
+                    "features": features,
+                }
+            )
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -316,11 +322,13 @@ class IngestService:
                 float(item.phosphorus_mg_kg),
                 float(item.potassium_mg_kg),
             ]
-            pending_updates.append({
-                "layer": "npk",
-                "vertex_id": str(target_vertex.id),
-                "features": features,
-            })
+            pending_updates.append(
+                {
+                    "layer": "npk",
+                    "vertex_id": str(target_vertex.id),
+                    "features": features,
+                }
+            )
             event_details.append(
                 {
                     "zone_id": str(item.zone_id),
@@ -382,11 +390,13 @@ class IngestService:
                 anomaly_score,
                 0.0,
             ]
-            pending_updates.append({
-                "layer": "vision",
-                "vertex_id": str(item.camera_id),
-                "features": features,
-            })
+            pending_updates.append(
+                {
+                    "layer": "vision",
+                    "vertex_id": str(item.camera_id),
+                    "features": features,
+                }
+            )
             event_details.append(
                 {
                     "zone_id": str(crop_bed_vertex.zone_id)
@@ -452,11 +462,13 @@ class IngestService:
             rows.append(row)
 
             features = [float(item.par_umol), float(item.dli_cumulative), 0.0]
-            pending_updates.append({
-                "layer": "lighting",
-                "vertex_id": str(item.fixture_id),
-                "features": features,
-            })
+            pending_updates.append(
+                {
+                    "layer": "lighting",
+                    "vertex_id": str(item.fixture_id),
+                    "features": features,
+                }
+            )
             event_details.append(
                 {
                     "zone_id": str(vertex.zone_id) if vertex.zone_id is not None else None,
@@ -583,9 +595,7 @@ class IngestService:
             julia_bridge.batch_update_features(farm_id, updates)
         except Exception as exc:
             self._logger.warning("batch graph update failed for farm %s: %s", farm_id, exc)
-            warnings.append(
-                IngestWarning(index=0, message=f"batch graph update failed: {exc}")
-            )
+            warnings.append(IngestWarning(index=0, message=f"batch graph update failed: {exc}"))
 
     async def _require_farm(self, farm_id: uuid.UUID) -> Farm:
         row = await self.db.execute(select(Farm).where(Farm.id == farm_id))

@@ -224,9 +224,7 @@ async def test_ingest_soil_graph_and_event_envelope(monkeypatch: pytest.MonkeyPa
 
     batch_calls: list[tuple[str, list[dict[str, object]]]] = []
 
-    def _fake_batch_update(
-        farm_id: str, updates: list[dict[str, object]]
-    ) -> dict[str, object]:
+    def _fake_batch_update(farm_id: str, updates: list[dict[str, object]]) -> dict[str, object]:
         batch_calls.append((farm_id, updates))
         return {"ok": True, "farm_id": farm_id, "version": 1, "n_updated": len(updates)}
 

@@ -10,7 +10,6 @@ FROM julia:1.12-bookworm AS julia-deps
 
 WORKDIR /julia-build
 COPY core/AgriSenseCore/Project.toml core/AgriSenseCore/Project.toml
-COPY core/AgriSenseCore/Manifest.toml core/AgriSenseCore/Manifest.toml
 
 # Instantiate deps (downloads packages, creates Manifest.toml)
 RUN julia --project=core/AgriSenseCore -e ' \
