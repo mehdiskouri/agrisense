@@ -11,11 +11,10 @@ FROM julia:1.12-bookworm AS julia-deps
 WORKDIR /julia-build
 COPY core/AgriSenseCore/Project.toml core/AgriSenseCore/Project.toml
 
-# Instantiate deps (downloads packages, creates Manifest.toml)
+# Instantiate deps from Project.toml (without requiring local package source)
 RUN julia --project=core/AgriSenseCore -e ' \
     using Pkg; \
     Pkg.instantiate(); \
-    Pkg.precompile(); \
 '
 
 # ── Stage 2: Python dependencies ────────────────────────────────────────────
