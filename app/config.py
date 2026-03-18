@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     ask_enable_zone_detail_tool: bool = True
     ask_enable_backtest_tool: bool = False
 
+    # ── Spreadsheet reports ────────────────────────────────────────────────
+    report_irrigation_horizon_days: int = 7
+    report_max_history_points: int = 96
+
     # ── Farm defaults ───────────────────────────────────────────────────────
     farm_default_type: FarmType = FarmType.greenhouse
 

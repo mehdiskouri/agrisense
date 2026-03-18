@@ -164,8 +164,80 @@ For compose GPU execution, switch `api.build.target` to `runtime-gpu` and enable
 | | GET | `/api/v1/analytics/{id}/irrigation/schedule` | 7-day schedule |
 | | GET | `/api/v1/analytics/{id}/yield/forecast` | Yield prediction |
 | | GET | `/api/v1/analytics/{id}/alerts` | Active alerts |
+| | POST | `/api/v1/analytics/{id}/reports/generate` | Generate report download (`xlsx` or `pdf`) |
+| | POST | `/api/v1/analytics/{id}/reports/generate/async` | Enqueue async report job (`xlsx` or `pdf`) |
+| | GET | `/api/v1/analytics/{id}/reports/jobs/{job_id}` | Check async report job status |
+| | GET | `/api/v1/analytics/{id}/reports/jobs/{job_id}/download` | Download async report artifact |
 | **NL Query** | POST | `/api/v1/ask/{id}` | Natural language question |
 | **WebSocket** | WS | `/ws/{id}/live` | Real-time sensor feed |
+
+---
+
+## Spreadsheet Reports
+
+Report generation supports both synchronous download and asynchronous job workflows.
+
+### Supported formats
+
+- `xlsx` (default): multi-sheet Excel workbook with styled tables and charts.
+- `pdf`: compact summary report for quick sharing and preview.
+
+### Sync endpoint behavior
+
+- Endpoint: `POST /api/v1/analytics/{farm_id}/reports/generate`
+- Query param: `format=xlsx|pdf` (default `xlsx`)
+- Header: `Content-Disposition: attachment; filename="..."`
+- Header: `X-Report-Cache: HIT|MISS`
+
+Sync reports are cached in Redis for 15 minutes using a key derived from:
+
+- `farm_id`
+- normalized request payload
+- selected output format (`xlsx` or `pdf`)
+
+### Async endpoint behavior
+
+- Enqueue: `POST /api/v1/analytics/{farm_id}/reports/generate/async?format=xlsx|pdf`
+- Status: `GET /api/v1/analytics/{farm_id}/reports/jobs/{job_id}`
+- Download: `GET /api/v1/analytics/{farm_id}/reports/jobs/{job_id}/download`
+
+Async job metadata and report artifacts are stored in Redis with a 6-hour TTL.
+
+### Example usage
+
+```bash
+# Sync XLSX (default format)
+curl -X POST "$BASE_URL/api/v1/analytics/$FARM_ID/reports/generate" \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"irrigation_horizon_days":7,"include_members":true,"include_history_charts":true}' \
+    -D /tmp/report_headers.txt \
+    -o agrisense-report.xlsx
+
+# Sync PDF
+curl -X POST "$BASE_URL/api/v1/analytics/$FARM_ID/reports/generate?format=pdf" \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"irrigation_horizon_days":7,"include_members":false,"include_history_charts":false}' \
+    -o agrisense-report.pdf
+
+# Async enqueue (PDF)
+JOB_ID=$(curl -s -X POST "$BASE_URL/api/v1/analytics/$FARM_ID/reports/generate/async?format=pdf" \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"irrigation_horizon_days":7,"include_members":true,"include_history_charts":true}' | jq -r '.job_id')
+
+# Async status
+curl -s "$BASE_URL/api/v1/analytics/$FARM_ID/reports/jobs/$JOB_ID" \
+    -H "Authorization: Bearer $AUTH_TOKEN"
+
+# Async download
+curl -L "$BASE_URL/api/v1/analytics/$FARM_ID/reports/jobs/$JOB_ID/download" \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -o agrisense-report-async
+```
+
+Access control for all report endpoints is restricted to `admin` and `agronomist` roles.
 
 ---
 

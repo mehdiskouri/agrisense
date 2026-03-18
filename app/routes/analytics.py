@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_role
@@ -23,7 +26,9 @@ from app.schemas.analytics import (
     ZoneDetailQuery,
     ZoneDetailResponse,
 )
+from app.schemas.reports import ReportJobCreateResponse, ReportJobStatusResponse, ReportRequest
 from app.services.analytics_service import AnalyticsService
+from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -34,6 +39,21 @@ async def _run_yield_backtest_job(job_id: uuid.UUID, redis_client: object | None
         try:
             await service.execute_yield_backtest_job(job_id)
             await session.commit()
+        except Exception:
+            await session.rollback()
+
+
+async def _run_report_job(
+    job_id: uuid.UUID,
+    farm_id: uuid.UUID,
+    payload: ReportRequest,
+    output_format: str,
+    redis_client: object | None,
+) -> None:
+    async with async_session_factory() as session:
+        service = ReportService(session, redis_client)  # type: ignore[arg-type]
+        try:
+            await service.execute_report_job(job_id, farm_id, payload, output_format=output_format)
         except Exception:
             await session.rollback()
 
@@ -287,3 +307,129 @@ async def get_active_alerts(
         return await service.get_active_alerts(farm_id)
     except Exception as exc:
         raise _map_error(exc) from exc
+
+
+@router.post("/{farm_id}/reports/generate", response_class=StreamingResponse)
+async def generate_spreadsheet_report(
+    farm_id: uuid.UUID,
+    payload: ReportRequest,
+    request: Request,
+    output_format: Literal["xlsx", "pdf"] = Query(default="xlsx", alias="format"),
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
+) -> StreamingResponse:
+    service = ReportService(db, getattr(request.app.state, "redis", None))
+    try:
+        content, filename, media_type, cache_hit = await service.generate_report_artifact(
+            farm_id,
+            payload,
+            output_format=output_format,
+        )
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Report-Cache": "HIT" if cache_hit else "MISS",
+    }
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=media_type,
+        headers=headers,
+    )
+
+
+@router.post(
+    "/{farm_id}/reports/generate/async",
+    response_model=ReportJobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def enqueue_spreadsheet_report(
+    farm_id: uuid.UUID,
+    payload: ReportRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    output_format: Literal["xlsx", "pdf"] = Query(default="xlsx", alias="format"),
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
+) -> ReportJobCreateResponse:
+    redis_client = getattr(request.app.state, "redis", None)
+    if redis_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="redis unavailable for async report generation",
+        )
+
+    service = ReportService(db, redis_client)
+    try:
+        response = await service.create_report_job(
+            farm_id,
+            payload,
+            output_format=output_format,
+        )
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+    background_tasks.add_task(
+        _run_report_job,
+        response.job_id,
+        farm_id,
+        payload,
+        output_format,
+        redis_client,
+    )
+    return response
+
+
+@router.get("/{farm_id}/reports/jobs/{job_id}", response_model=ReportJobStatusResponse)
+async def get_spreadsheet_report_job_status(
+    farm_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
+) -> ReportJobStatusResponse:
+    service = ReportService(db, getattr(request.app.state, "redis", None))
+    try:
+        status_payload = await service.get_report_job_status(job_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+    if status_payload.farm_id != farm_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="job does not belong to farm",
+        )
+    return status_payload
+
+
+@router.get("/{farm_id}/reports/jobs/{job_id}/download", response_class=StreamingResponse)
+async def download_spreadsheet_report(
+    farm_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
+) -> StreamingResponse:
+    service = ReportService(db, getattr(request.app.state, "redis", None))
+    try:
+        status_payload = await service.get_report_job_status(job_id)
+        if status_payload.farm_id != farm_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="job does not belong to farm",
+            )
+        content, filename, media_type = await service.get_report_job_file(job_id)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=media_type,
+        headers=headers,
+    )
