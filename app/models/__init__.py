@@ -32,7 +32,7 @@ from app.models.enums import (
 
 # ── Core topology models ────────────────────────────────────────────────────
 from app.models.farm import Farm, HyperEdge, Vertex, Zone
-from app.models.jobs import RecomputeJob
+from app.models.jobs import BacktestJob, RecomputeJob
 
 # ── Time-series sensor models ──────────────────────────────────────────────
 from app.models.sensors import (
@@ -46,6 +46,7 @@ from app.models.sensors import (
 
 __all__ = [
     "AnomalyTypeEnum",
+    "BacktestJob",
     "Base",
     "CropProfile",
     "Farm",

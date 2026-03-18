@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
@@ -13,6 +14,7 @@ from app.schemas.jobs import JobCreateResponse, JobStatusResponse
 from app.services.jobs_service import JobsService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = logging.getLogger("agrisense.jobs")
 
 
 def _map_error(exc: Exception) -> HTTPException:
@@ -29,11 +31,20 @@ async def _run_recompute_job(job_id: uuid.UUID, redis_client: object | None) -> 
         try:
             await service.execute_recompute(job_id)
             await session.commit()
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "background recompute failed",
+                extra={"job_id": str(job_id), "error": str(exc)},
+            )
             try:
+                # JobsService marks status=failed before re-raising; persist it when possible.
                 await session.commit()
-            except Exception:
-                return
+            except Exception as commit_exc:
+                logger.exception(
+                    "failed to persist recompute failure status",
+                    extra={"job_id": str(job_id), "error": str(commit_exc)},
+                )
+                await session.rollback()
 
 
 @router.post(

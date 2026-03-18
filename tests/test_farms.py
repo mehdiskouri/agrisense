@@ -10,7 +10,9 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import FarmTypeEnum, VertexTypeEnum, ZoneTypeEnum
+from app.schemas.farm import VisualizationResponse
 from app.services import julia_bridge
+from app.services.analytics_service import AnalyticsService
 from app.services.farm_service import FarmService
 
 
@@ -248,3 +250,216 @@ async def test_query_zone_status_uses_resolver(monkeypatch: pytest.MonkeyPatch) 
     status = await service.query_zone_status(farm_id, zone_id)
 
     assert status["zone"] == "resolved-vertex"
+
+
+@pytest.mark.asyncio
+async def test_visualization_endpoint_returns_200(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    farm_id = uuid4()
+    vertex_id = str(uuid4())
+    payload = VisualizationResponse(
+        farm_id=farm_id,
+        farm_name="Farm Viz",
+        farm_type=FarmTypeEnum.greenhouse,
+        generated_at=datetime.now(UTC),
+        layers=[
+            {
+                "name": "soil",
+                "color": "#8B4513",
+                "feature_names": ["moisture"],
+                "n_edges": 1,
+                "n_vertices": 1,
+            }
+        ],
+        nodes=[
+            {
+                "id": vertex_id,
+                "type": "vertex",
+                "vertex_type": "sensor",
+                "features": {"soil": [0.1]},
+                "layer_memberships": ["soil"],
+            }
+        ],
+        links=[],
+        alerts=[],
+        cross_layer_summary=[],
+    )
+
+    async def fake_visualization(self: AnalyticsService, _farm_id: object) -> VisualizationResponse:
+        return payload
+
+    monkeypatch.setattr(AnalyticsService, "get_visualization", fake_visualization)
+
+    response = await client.get(f"/api/v1/farms/{farm_id}/visualization")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["farm_name"] == "Farm Viz"
+    assert body["nodes"][0]["id"] == vertex_id
+    assert body["layers"][0]["name"] == "soil"
+
+
+@pytest.mark.asyncio
+async def test_visualization_node_structure(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    farm_id = uuid4()
+    vertex_id = str(uuid4())
+    hyperedge_id = "he:soil:e-1"
+
+    async def fake_visualization(self: AnalyticsService, _farm_id: object) -> VisualizationResponse:
+        return VisualizationResponse(
+            farm_id=farm_id,
+            farm_name="Farm Viz",
+            farm_type=FarmTypeEnum.greenhouse,
+            generated_at=datetime.now(UTC),
+            layers=[],
+            nodes=[
+                {
+                    "id": vertex_id,
+                    "type": "vertex",
+                    "vertex_type": "sensor",
+                    "features": {"soil": [0.2, 0.3]},
+                    "layer_memberships": ["soil"],
+                },
+                {
+                    "id": hyperedge_id,
+                    "type": "hyperedge",
+                    "layer": "soil",
+                    "metadata": {"kind": "zone"},
+                    "member_count": 1,
+                    "layer_memberships": ["soil"],
+                },
+            ],
+            links=[{"source": hyperedge_id, "target": vertex_id, "layer": "soil"}],
+            alerts=[],
+            cross_layer_summary=[],
+        )
+
+    monkeypatch.setattr(AnalyticsService, "get_visualization", fake_visualization)
+    response = await client.get(f"/api/v1/farms/{farm_id}/visualization")
+
+    assert response.status_code == 200
+    nodes = response.json()["nodes"]
+    vertex = next(item for item in nodes if item["type"] == "vertex")
+    hub = next(item for item in nodes if item["type"] == "hyperedge")
+    assert "soil" in vertex["features"]
+    assert hub["layer"] == "soil"
+
+
+@pytest.mark.asyncio
+async def test_visualization_link_integrity(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    farm_id = uuid4()
+
+    async def fake_visualization(self: AnalyticsService, _farm_id: object) -> VisualizationResponse:
+        return VisualizationResponse(
+            farm_id=farm_id,
+            farm_name="Farm Viz",
+            farm_type=FarmTypeEnum.greenhouse,
+            generated_at=datetime.now(UTC),
+            layers=[],
+            nodes=[
+                {
+                    "id": "vertex-1",
+                    "type": "vertex",
+                    "vertex_type": "sensor",
+                    "features": {},
+                    "layer_memberships": ["soil"],
+                },
+                {
+                    "id": "he:soil:e-1",
+                    "type": "hyperedge",
+                    "layer": "soil",
+                    "metadata": {},
+                    "member_count": 1,
+                    "layer_memberships": ["soil"],
+                },
+            ],
+            links=[{"source": "he:soil:e-1", "target": "vertex-1", "layer": "soil"}],
+            alerts=[],
+            cross_layer_summary=[],
+        )
+
+    monkeypatch.setattr(AnalyticsService, "get_visualization", fake_visualization)
+    response = await client.get(f"/api/v1/farms/{farm_id}/visualization")
+
+    assert response.status_code == 200
+    body = response.json()
+    node_ids = {node["id"] for node in body["nodes"]}
+    for link in body["links"]:
+        assert link["source"] in node_ids
+        assert link["target"] in node_ids
+
+
+@pytest.mark.asyncio
+async def test_visualization_layer_metadata(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    farm_id = uuid4()
+
+    async def fake_visualization(self: AnalyticsService, _farm_id: object) -> VisualizationResponse:
+        return VisualizationResponse(
+            farm_id=farm_id,
+            farm_name="Farm Viz",
+            farm_type=FarmTypeEnum.greenhouse,
+            generated_at=datetime.now(UTC),
+            layers=[
+                {
+                    "name": "soil",
+                    "color": "#8B4513",
+                    "feature_names": ["moisture", "temperature"],
+                    "n_edges": 2,
+                    "n_vertices": 3,
+                },
+                {
+                    "name": "weather",
+                    "color": "#87CEEB",
+                    "feature_names": ["temperature"],
+                    "n_edges": 1,
+                    "n_vertices": 1,
+                },
+            ],
+            nodes=[],
+            links=[],
+            alerts=[],
+            cross_layer_summary=[],
+        )
+
+    monkeypatch.setattr(AnalyticsService, "get_visualization", fake_visualization)
+    response = await client.get(f"/api/v1/farms/{farm_id}/visualization")
+
+    assert response.status_code == 200
+    layers = {item["name"]: item for item in response.json()["layers"]}
+    assert layers["soil"]["color"] == "#8B4513"
+    assert layers["soil"]["n_edges"] == 2
+    assert layers["weather"]["feature_names"] == ["temperature"]
+
+
+@pytest.mark.asyncio
+async def test_visualization_missing_farm_maps_to_404(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_visualization(self: AnalyticsService, _farm_id: object) -> VisualizationResponse:
+        raise LookupError("Farm not found")
+
+    monkeypatch.setattr(AnalyticsService, "get_visualization", fake_visualization)
+    response = await client.get(f"/api/v1/farms/{uuid4()}/visualization")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_visualization_openapi_contract(client: AsyncClient) -> None:
+    openapi = await client.get("/openapi.json")
+    assert openapi.status_code == 200
+    assert "/api/v1/farms/{farm_id}/visualization" in openapi.json()["paths"]
+
+
+@pytest.mark.asyncio
+async def test_static_dashboard_html_served(client: AsyncClient) -> None:
+
+    page = await client.get("/static/dashboard.html")
+    assert page.status_code == 200
+    assert "text/html" in page.headers.get("content-type", "")

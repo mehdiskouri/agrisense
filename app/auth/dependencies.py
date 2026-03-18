@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import re
 import uuid
@@ -60,6 +59,11 @@ def _coerce_scopes(raw: Mapping[str, Any] | None) -> set[str]:
         if isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "allow"}:
             scopes.add(str(key))
     return scopes
+
+
+def scope_grants(scopes: set[str], scope: str) -> bool:
+    """Accept both canonical and legacy write-prefixed scope names."""
+    return scope in scopes or f"write:{scope}" in scopes
 
 
 def extract_request_farm_id(request: Request) -> uuid.UUID | None:
@@ -169,16 +173,32 @@ def require_role(*allowed: UserRoleEnum) -> Callable[[User], Awaitable[User]]:
 
 async def _resolve_api_key(db: AsyncSession, plaintext_key: str) -> APIKey:
     digest = _api_key_digest(plaintext_key)
+
+    # Fast path: digest lookup for modern SHA256 keys.
+    digest_row = await db.execute(
+        select(APIKey).where(
+            APIKey.is_active.is_(True),
+            APIKey.key_hash == digest,
+        )
+    )
+    digest_match_key = digest_row.scalar_one_or_none()
+    if digest_match_key is not None:
+        if digest_match_key.expires_at is not None and digest_match_key.expires_at <= datetime.now(
+            UTC
+        ):
+            raise _raise_auth(AuthError(code="api_key_expired", detail="API key expired"))
+        return digest_match_key
+
+    # Legacy fallback: older bcrypt-hashed keys require verify scan.
     rows = await db.execute(select(APIKey).where(APIKey.is_active.is_(True)))
     for api_key in rows.scalars().all():
         stored_hash = api_key.key_hash
-        hash_match = hmac.compare_digest(digest, stored_hash)
         bcrypt_match = False
         try:
             bcrypt_match = pwd_context.verify(plaintext_key, stored_hash)
         except ValueError:
             bcrypt_match = False
-        if not (hash_match or bcrypt_match):
+        if not bcrypt_match:
             continue
         if api_key.expires_at is not None and api_key.expires_at <= datetime.now(UTC):
             raise _raise_auth(AuthError(code="api_key_expired", detail="API key expired"))
@@ -237,13 +257,19 @@ def require_machine_scope(
 
     async def dependency(principal: AuthPrincipal = Depends(get_auth_principal)) -> AuthPrincipal:
         if principal.auth_type != "api_key":
-            return principal
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "api_key_required",
+                    "message": "Machine-scoped endpoints require API key authentication",
+                },
+            )
         if scope not in allowed_scopes:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={"error": "scope_invalid", "message": "Scope is not permitted"},
             )
-        if scope not in principal.scopes:
+        if not scope_grants(principal.scopes, scope):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={"error": "scope_missing", "message": f"Missing scope: {scope}"},

@@ -209,11 +209,11 @@ async def client(fake_db_session: FakeAsyncSession) -> AsyncGenerator[AsyncClien
 
     async def override_auth_principal() -> AuthPrincipal:
         return AuthPrincipal(
-            auth_type="jwt",
+            auth_type="api_key",
             subject_id=uuid.uuid4(),
-            role=UserRoleEnum.admin,
-            scopes=set(),
-            api_key_id=None,
+            role=UserRoleEnum.field_operator,
+            scopes={"ingest", "jobs"},
+            api_key_id=uuid.uuid4(),
         )
 
     app.dependency_overrides[get_db] = override_get_db

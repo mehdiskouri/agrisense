@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -86,3 +86,55 @@ class FarmGraphRead(BaseModel):
 
 class FarmListRead(BaseModel):
     items: list[FarmRead]
+
+
+class VisualizationNode(BaseModel):
+    id: str
+    type: Literal["vertex", "hyperedge"]
+    vertex_type: str | None = None
+    zone_id: uuid.UUID | None = None
+    zone_name: str | None = None
+    layer: str | None = None
+    features: dict[str, list[float]] = Field(default_factory=dict)
+    layer_memberships: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    member_count: int | None = None
+
+
+class VisualizationLink(BaseModel):
+    source: str
+    target: str
+    layer: str
+
+
+class VisualizationLayerMeta(BaseModel):
+    name: str
+    color: str
+    feature_names: list[str] = Field(default_factory=list)
+    n_edges: int = 0
+    n_vertices: int = 0
+
+
+class CrossLayerSummary(BaseModel):
+    layer_a: str
+    layer_b: str
+    shared_vertices: int
+
+
+class VisualizationAlertItem(BaseModel):
+    vertex_id: str | None = None
+    source: str
+    severity: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class VisualizationResponse(BaseModel):
+    farm_id: uuid.UUID
+    farm_name: str
+    farm_type: FarmTypeEnum
+    generated_at: datetime
+    layers: list[VisualizationLayerMeta] = Field(default_factory=list)
+    nodes: list[VisualizationNode] = Field(default_factory=list)
+    links: list[VisualizationLink] = Field(default_factory=list)
+    alerts: list[VisualizationAlertItem] = Field(default_factory=list)
+    cross_layer_summary: list[CrossLayerSummary] = Field(default_factory=list)

@@ -1697,8 +1697,10 @@ class TestAuthEdgeCases:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_machine_scope_jwt_user_bypasses_scope_check(self) -> None:
-        """JWT users (non-API-key) are allowed through machine scope endpoints."""
+    async def test_machine_scope_jwt_user_rejected(self) -> None:
+        """Machine-scoped endpoints require API-key principals."""
+        from fastapi import HTTPException
+
         from app.auth.dependencies import require_machine_scope
 
         dep = require_machine_scope("ingest")
@@ -1708,8 +1710,12 @@ class TestAuthEdgeCases:
             role=UserRoleEnum.admin,
             scopes=set(),
         )
-        result = await dep(jwt_principal)
-        assert result.auth_type == "jwt"
+        with pytest.raises(HTTPException) as exc_info:
+            await dep(jwt_principal)
+        assert exc_info.value.status_code == 403
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert detail["error"] == "api_key_required"
 
     @pytest.mark.asyncio
     async def test_machine_scope_invalid_scope_403(self) -> None:
@@ -1750,6 +1756,7 @@ class TestWebSocketEdgeCases:
             return True
 
         monkeypatch.setattr(ws, "_farm_exists", fake_farm_exists)
+        monkeypatch.setattr(ws, "AUTH_MESSAGE_TIMEOUT_SECONDS", 0.01)
         app.state.redis = fake_redis
 
         original_lifespan = app.router.lifespan_context
@@ -1761,8 +1768,9 @@ class TestWebSocketEdgeCases:
         app.router.lifespan_context = noop_lifespan
         with (
             TestClient(app) as tc,
-            tc.websocket_connect(f"/ws/{uuid.uuid4()}/live?token=%20%20") as ws_conn,
+            tc.websocket_connect(f"/ws/{uuid.uuid4()}/live") as ws_conn,
         ):
+            ws_conn.send_json({"type": "auth", "token": "  "})
             payload = ws_conn.receive_json()
             assert payload["error"] == "auth_required"
         app.router.lifespan_context = original_lifespan
@@ -1802,8 +1810,9 @@ class TestWebSocketEdgeCases:
         app.router.lifespan_context = noop_lifespan
         with (
             TestClient(app) as tc,
-            tc.websocket_connect(f"/ws/{farm_id}/live?token=test-token") as ws_conn,
+            tc.websocket_connect(f"/ws/{farm_id}/live") as ws_conn,
         ):
+            ws_conn.send_json({"type": "auth", "token": "test-token"})
             received = []
             for _ in range(3):
                 received.append(ws_conn.receive_json())
@@ -1845,8 +1854,9 @@ class TestWebSocketEdgeCases:
         app.router.lifespan_context = noop_lifespan
         with (
             TestClient(app) as tc,
-            tc.websocket_connect(f"/ws/{farm_id}/live?token=test-token") as ws_conn,
+            tc.websocket_connect(f"/ws/{farm_id}/live") as ws_conn,
         ):
+            ws_conn.send_json({"type": "auth", "token": "test-token"})
             payload = ws_conn.receive_json()
             assert payload["evt"] == "bytes_test"
         app.router.lifespan_context = original_lifespan

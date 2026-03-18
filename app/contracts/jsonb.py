@@ -115,6 +115,10 @@ APIKeyScopes = TypedDict(
         "read:farms": bool,
         "read:analytics": bool,
         "read:jobs": bool,
+        # Canonical machine scopes used by runtime enforcement.
+        "ingest": bool,
+        "jobs": bool,
+        # Legacy write-prefixed aliases accepted for backward compatibility.
         "write:ingest": bool,
         "write:jobs": bool,
         "admin": bool,

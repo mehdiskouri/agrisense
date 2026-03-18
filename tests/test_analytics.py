@@ -24,9 +24,18 @@ from app.schemas.analytics import (
     ZoneDetailResponse,
     ZoneStatus,
 )
+from app.schemas.farm import VisualizationResponse
 from app.services import julia_bridge
 from app.services.analytics_service import AnalyticsService
 from app.services.farm_service import FarmService
+
+
+class _ScalarRow:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> object:
+        return self._value
 
 
 @pytest.mark.asyncio
@@ -341,3 +350,114 @@ async def test_yield_backtest_async_enqueue_and_status(
     status_resp = await client.get(f"/api/v1/analytics/{farm_id}/yield/backtest/jobs/{job_id}")
     assert status_resp.status_code == 200
     assert status_resp.json()["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_visualization_service_builds_hub_nodes_and_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    farm_id = uuid4()
+    zone_id = uuid4()
+    vertex_a = uuid4()
+    vertex_b = uuid4()
+
+    fake_db = cast(AsyncSession, SimpleNamespace())
+    service = AnalyticsService(fake_db, None)
+
+    farm = SimpleNamespace(
+        id=farm_id,
+        name="Farm Viz",
+        farm_type="greenhouse",
+        zones=[SimpleNamespace(id=zone_id, name="Zone A")],
+        vertices=[
+            SimpleNamespace(
+                id=vertex_a,
+                zone_id=zone_id,
+                vertex_type=SimpleNamespace(value="sensor"),
+            ),
+            SimpleNamespace(
+                id=vertex_b,
+                zone_id=zone_id,
+                vertex_type=SimpleNamespace(value="valve"),
+            ),
+        ],
+    )
+    graph_state = {
+        "farm_id": str(farm_id),
+        "n_vertices": 2,
+        "vertex_index": {str(vertex_a): 1, str(vertex_b): 2},
+        "layers": {
+            "soil": {
+                "incidence_rows": [1, 2],
+                "incidence_cols": [1, 1],
+                "edge_ids": ["soil-e1"],
+                "edge_metadata": [{"kind": "soil_edge"}],
+                "vertex_ids": [str(vertex_a), str(vertex_b)],
+                "vertex_features": [[0.4, 21.0, 1.2, 6.8], [0.3, 22.0, 1.1, 6.7]],
+            },
+            "weather": {
+                "incidence_rows": [1],
+                "incidence_cols": [1],
+                "edge_ids": ["weather-e1"],
+                "edge_metadata": [{"kind": "weather_edge"}],
+                "vertex_ids": [str(vertex_a), str(vertex_b)],
+                "vertex_features": [[25.0, 0.7, 2.1, 0.0, 9.0], [24.5, 0.65, 1.9, 0.0, 8.8]],
+            },
+        },
+    }
+
+    async def fake_get_farm(self: FarmService, _farm_id: object) -> object:
+        return farm
+
+    async def fake_get_graph(self: FarmService, _farm_id: object) -> dict[str, object]:
+        return graph_state
+
+    async def fake_alerts(self: AnalyticsService, _farm_id: object) -> object:
+        return SimpleNamespace(zones=[])
+
+    monkeypatch.setattr(FarmService, "get_farm", fake_get_farm)
+    monkeypatch.setattr(FarmService, "get_graph", fake_get_graph)
+    monkeypatch.setattr(AnalyticsService, "get_active_alerts", fake_alerts)
+
+    visualization = await service.get_visualization(farm_id)
+
+    assert isinstance(visualization, VisualizationResponse)
+    assert len(visualization.nodes) == 4
+    assert len(visualization.links) == 3
+    assert {item.name for item in visualization.layers} == {"soil", "weather"}
+
+
+@pytest.mark.asyncio
+async def test_backtest_status_falls_back_to_db_when_cache_miss() -> None:
+    now = datetime.now(UTC)
+    job_id = uuid4()
+    farm_id = uuid4()
+
+    job = SimpleNamespace(
+        id=job_id,
+        farm_id=farm_id,
+        status=SimpleNamespace(value="queued"),
+        n_folds=5,
+        min_history=24,
+        created_at=now,
+        updated_at=now,
+        completed_at=None,
+        error=None,
+        result=None,
+    )
+
+    fake_db = cast(
+        AsyncSession,
+        SimpleNamespace(execute=AsyncMock(return_value=_ScalarRow(job))),
+    )
+    fake_redis = cast(
+        object,
+        SimpleNamespace(get=AsyncMock(return_value=None), setex=AsyncMock(return_value=True)),
+    )
+
+    service = AnalyticsService(fake_db, fake_redis)  # type: ignore[arg-type]
+    status_payload = await service.get_yield_backtest_job_status(job_id)
+
+    assert status_payload.job_id == job_id
+    assert status_payload.farm_id == farm_id
+    assert status_payload.status == "queued"
