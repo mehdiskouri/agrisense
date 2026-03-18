@@ -11,6 +11,12 @@ from redis.asyncio import from_url
 
 from app.config import Settings
 
+REDIS_HISTORY_KEY_PREFIX = "message_store:"
+
+
+def _history_key(conversation_id: str) -> str:
+    return f"{REDIS_HISTORY_KEY_PREFIX}{conversation_id}"
+
 
 def resolve_conversation_id(
     farm_id: uuid.UUID,
@@ -62,7 +68,7 @@ async def refresh_ttl(redis_url: str, conversation_id: str, ttl_seconds: int) ->
     """Refresh conversation TTL to keep active sessions alive."""
     redis_client = from_url(redis_url, decode_responses=True)
     try:
-        await redis_client.expire(conversation_id, ttl_seconds)
+        await redis_client.expire(_history_key(conversation_id), ttl_seconds)
     finally:
         await redis_client.aclose()
 
@@ -72,7 +78,7 @@ async def clear_conversation(redis_url: str, farm_id: uuid.UUID, user_id: uuid.U
     conversation_id = resolve_conversation_id(farm_id, user_id, None)
     redis_client = from_url(redis_url, decode_responses=True)
     try:
-        await redis_client.delete(conversation_id)
+        await redis_client.delete(_history_key(conversation_id))
     finally:
         await redis_client.aclose()
     return conversation_id

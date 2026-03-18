@@ -3,23 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import uuid
-from datetime import UTC, datetime
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from passlib.context import CryptContext
-from sqlalchemy import select, true
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
+from app.auth.dependencies import _coerce_scopes, _resolve_api_key, scope_grants
 from app.auth.jwt import AuthError, decode_token
-from app.auth.models import APIKey, User
+from app.auth.models import User
 from app.database import async_session_factory
 from app.models.farm import Farm
 
 router = APIRouter(tags=["websocket"])
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+AUTH_MESSAGE_TIMEOUT_SECONDS = 5.0
 
 
 async def _farm_exists(farm_id: uuid.UUID) -> bool:
@@ -28,33 +25,20 @@ async def _farm_exists(farm_id: uuid.UUID) -> bool:
         return row.scalar_one_or_none() is not None
 
 
-async def _resolve_api_key(token: str) -> tuple[uuid.UUID, str] | None:
-    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+async def _authenticate_api_key(token: str) -> bool:
     async with async_session_factory() as session:
-        rows = await session.execute(select(APIKey).where(APIKey.is_active == true()))
-        for api_key in rows.scalars().all():
-            stored_hash = api_key.key_hash
-            digest_match = hmac.compare_digest(digest, stored_hash)
-            bcrypt_match = False
-            try:
-                bcrypt_match = pwd_context.verify(token, stored_hash)
-            except ValueError:
-                bcrypt_match = False
-            if not (digest_match or bcrypt_match):
-                continue
-            if api_key.expires_at is not None and api_key.expires_at <= datetime.now(UTC):
-                return None
-            scopes = api_key.scopes or {}
-            scope_ok = bool(scopes.get("ingest") or scopes.get("jobs"))
-            if not scope_ok:
-                return None
+        try:
+            api_key = await _resolve_api_key(session, token)
+        except HTTPException:
+            return False
 
-            row = await session.execute(select(User).where(User.id == api_key.user_id))
-            user = row.scalar_one_or_none()
-            if user is None or not user.is_active:
-                return None
-            return user.id, user.role.value
-    return None
+        scopes = _coerce_scopes(api_key.scopes)
+        if not (scope_grants(scopes, "ingest") or scope_grants(scopes, "jobs")):
+            return False
+
+        row = await session.execute(select(User).where(User.id == api_key.user_id))
+        user = row.scalar_one_or_none()
+        return user is not None and user.is_active
 
 
 async def _authenticate_token(token: str) -> bool:
@@ -68,8 +52,29 @@ async def _authenticate_token(token: str) -> bool:
     except (AuthError, ValueError, KeyError):
         pass
 
-    api_key_user = await _resolve_api_key(token)
-    return api_key_user is not None
+    return await _authenticate_api_key(token)
+
+
+async def _receive_auth_token(websocket: WebSocket) -> str | None:
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=AUTH_MESSAGE_TIMEOUT_SECONDS)
+    except (TimeoutError, WebSocketDisconnect):
+        return None
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("type") != "auth":
+        return None
+
+    token = payload.get("token")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    return token.strip()
 
 
 @router.websocket("/ws/{farm_id}/live")
@@ -82,8 +87,8 @@ async def ws_live_feed(websocket: WebSocket, farm_id: str) -> None:
         await websocket.close(code=1008)
         return
 
-    token = websocket.query_params.get("token")
-    if token is None or not token.strip():
+    token = await _receive_auth_token(websocket)
+    if token is None:
         await websocket.send_json({"error": "auth_required"})
         await websocket.close(code=1008)
         return

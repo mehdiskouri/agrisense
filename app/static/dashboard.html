@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgriSense Hypergraph Dashboard</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap"
+    rel="stylesheet"
+  />
+  <style>
+    :root {
+      --bg: #f4f7ef;
+      --bg-accent: #e2ebd7;
+      --panel: #fbfdf8;
+      --ink: #1f2a1f;
+      --muted: #5f6f60;
+      --line: #d6dfce;
+      --accent: #2d6a4f;
+      --danger: #c1121f;
+      --warn: #ff8c42;
+      --info: #f2c94c;
+      --soil: #8b4513;
+      --irrigation: #1e90ff;
+      --lighting: #ffd700;
+      --weather: #87ceeb;
+      --crop_requirements: #228b22;
+      --npk: #ff6347;
+      --vision: #9370db;
+      --shadow: 0 10px 30px rgba(45, 106, 79, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 20%, rgba(45, 106, 79, 0.16), transparent 30%),
+        radial-gradient(circle at 85% 10%, rgba(135, 206, 235, 0.35), transparent 35%),
+        linear-gradient(130deg, var(--bg), var(--bg-accent));
+      min-height: 100vh;
+    }
+
+    .page {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .title {
+      font-size: 1.35rem;
+      margin: 0;
+      letter-spacing: 0.02em;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      background: #fff;
+    }
+
+    .meta {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px 1fr 320px;
+      gap: 14px;
+      min-height: 0;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      overflow: auto;
+      min-height: 0;
+    }
+
+    .panel h2 {
+      margin: 0;
+      font-size: 1rem;
+      padding: 14px 14px 8px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .side-body {
+      padding: 12px 14px 16px 14px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .layer-item,
+    .pair-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    .pair-item {
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+
+    .pair-item:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.08);
+    }
+
+    .pair-item.active {
+      border-color: var(--accent);
+      background: rgba(45, 106, 79, 0.08);
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 0, 0, 0.25);
+      flex: 0 0 12px;
+    }
+
+    .layer-name {
+      flex: 1;
+      font-size: 0.9rem;
+      text-transform: capitalize;
+    }
+
+    .layer-meta {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.74rem;
+      color: var(--muted);
+    }
+
+    .graph-wrap {
+      position: relative;
+      background: linear-gradient(180deg, #fbfdf8, #f0f6e8);
+      overflow: hidden;
+    }
+
+    #graph {
+      width: 100%;
+      height: 100%;
+      min-height: 560px;
+      display: block;
+    }
+
+    .legend {
+      position: absolute;
+      right: 10px;
+      top: 10px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      display: grid;
+      gap: 6px;
+      min-width: 160px;
+      backdrop-filter: blur(4px);
+    }
+
+    .legend-title {
+      margin: 0;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .inspector {
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .inspector-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .inspector h3 {
+      margin: 0;
+      font-size: 0.95rem;
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.8rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+
+    th,
+    td {
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      padding: 4px 0;
+      vertical-align: top;
+    }
+
+    .alert {
+      border-left: 4px solid var(--info);
+      padding-left: 8px;
+    }
+
+    .alert.high {
+      border-color: var(--danger);
+    }
+
+    .alert.medium {
+      border-color: var(--warn);
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .loading,
+    .error {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font-size: 1rem;
+      background: rgba(251, 253, 248, 0.85);
+      z-index: 10;
+    }
+
+    .error {
+      color: var(--danger);
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(1);
+        opacity: 0.85;
+      }
+      70% {
+        transform: scale(1.8);
+        opacity: 0;
+      }
+      100% {
+        transform: scale(1.8);
+        opacity: 0;
+      }
+    }
+
+    @media (max-width: 1100px) {
+      .layout {
+        grid-template-columns: 1fr;
+        grid-auto-rows: min-content;
+      }
+
+      .panel.graph-wrap {
+        min-height: 520px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="header">
+      <div class="title-wrap">
+        <h1 id="farmTitle" class="title">Hypergraph Dashboard</h1>
+        <span id="farmType" class="badge">Unknown</span>
+      </div>
+      <div id="meta" class="meta">Loading...</div>
+    </header>
+
+    <section class="layout">
+      <aside class="panel">
+        <h2>Layers</h2>
+        <div id="layerFilters" class="side-body"></div>
+        <h2>Cross-Layer Summary</h2>
+        <div id="crossSummary" class="side-body"></div>
+      </aside>
+
+      <main class="panel graph-wrap">
+        <div id="loading" class="loading">Loading visualization...</div>
+        <div id="error" class="error hidden"></div>
+        <svg id="graph"></svg>
+        <div class="legend">
+          <p class="legend-title">Legend</p>
+          <div class="muted">Large circles: vertices</div>
+          <div class="muted">Small circles: hyperedge hubs</div>
+          <div class="muted">Ring pulses: active alerts</div>
+        </div>
+      </main>
+
+      <aside class="panel">
+        <h2>Inspector</h2>
+        <div id="inspector" class="inspector">
+          <div class="inspector-card muted">Click a node to inspect details.</div>
+        </div>
+      </aside>
+    </section>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const farmId = params.get("farm_id");
+    const layerEnabled = new Set();
+    let activePairKey = null;
+
+    if (!farmId) {
+      showError("Missing required query parameter: farm_id");
+    } else {
+      loadVisualization(farmId).catch((error) => {
+        showError(error instanceof Error ? error.message : String(error));
+      });
+    }
+
+    async function loadVisualization(id) {
+      const response = await fetch(`/api/v1/farms/${id}/visualization`);
+      if (!response.ok) {
+        throw new Error(`Failed to load visualization (${response.status})`);
+      }
+      const data = await response.json();
+      renderHeader(data);
+      renderLayerFilters(data.layers);
+      renderCrossSummary(data.cross_layer_summary);
+      renderGraph(data);
+      document.getElementById("loading").classList.add("hidden");
+    }
+
+    function renderHeader(data) {
+      document.getElementById("farmTitle").textContent = data.farm_name;
+      document.getElementById("farmType").textContent = data.farm_type;
+      document.getElementById("meta").textContent = `Farm ${data.farm_id} | Generated ${new Date(data.generated_at).toLocaleString()}`;
+    }
+
+    function renderLayerFilters(layers) {
+      const container = document.getElementById("layerFilters");
+      container.innerHTML = "";
+      layers.forEach((layer) => {
+        layerEnabled.add(layer.name);
+        const row = document.createElement("label");
+        row.className = "layer-item";
+        row.innerHTML = `
+          <input type="checkbox" checked data-layer="${layer.name}" />
+          <span class="swatch" style="background:${layer.color}"></span>
+          <span class="layer-name">${layer.name}</span>
+          <span class="layer-meta">E:${layer.n_edges} V:${layer.n_vertices}</span>
+        `;
+        const input = row.querySelector("input");
+        input.addEventListener("change", (event) => {
+          const target = event.target;
+          if (target.checked) {
+            layerEnabled.add(layer.name);
+          } else {
+            layerEnabled.delete(layer.name);
+          }
+          document.dispatchEvent(new CustomEvent("filters:changed"));
+        });
+        container.appendChild(row);
+      });
+    }
+
+    function renderCrossSummary(pairs) {
+      const container = document.getElementById("crossSummary");
+      container.innerHTML = "";
+      if (!pairs.length) {
+        container.innerHTML = '<div class="muted">No cross-layer intersections available.</div>';
+        return;
+      }
+
+      pairs.forEach((pair) => {
+        const key = `${pair.layer_a}::${pair.layer_b}`;
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "pair-item";
+        row.innerHTML = `
+          <span class="swatch" style="background: var(--${pair.layer_a}, #6B7280)"></span>
+          <span class="swatch" style="background: var(--${pair.layer_b}, #6B7280)"></span>
+          <span class="layer-name">${pair.layer_a} x ${pair.layer_b}</span>
+          <span class="layer-meta">${pair.shared_vertices}</span>
+        `;
+        row.addEventListener("click", () => {
+          activePairKey = activePairKey === key ? null : key;
+          [...container.querySelectorAll(".pair-item")].forEach((item) => {
+            item.classList.toggle("active", item === row && activePairKey !== null);
+          });
+          document.dispatchEvent(new CustomEvent("filters:changed"));
+        });
+        container.appendChild(row);
+      });
+    }
+
+    function renderGraph(data) {
+      const svg = d3.select("#graph");
+      const width = svg.node().clientWidth || 900;
+      const height = svg.node().clientHeight || 620;
+      svg.attr("viewBox", [0, 0, width, height]);
+
+      const zoomLayer = svg.append("g");
+      const linkLayer = zoomLayer.append("g").attr("stroke-opacity", 0.55);
+      const nodeLayer = zoomLayer.append("g");
+      const haloLayer = zoomLayer.append("g");
+
+      svg.call(
+        d3
+          .zoom()
+          .scaleExtent([0.2, 4])
+          .on("zoom", (event) => zoomLayer.attr("transform", event.transform))
+      );
+
+      const alertsByVertex = new Map();
+      data.alerts.forEach((alert) => {
+        if (!alert.vertex_id) {
+          return;
+        }
+        if (!alertsByVertex.has(alert.vertex_id)) {
+          alertsByVertex.set(alert.vertex_id, []);
+        }
+        alertsByVertex.get(alert.vertex_id).push(alert);
+      });
+
+      const nodes = data.nodes.map((node) => ({ ...node }));
+      const nodeById = new Map(nodes.map((node) => [node.id, node]));
+      const links = data.links
+        .filter((link) => nodeById.has(link.source) && nodeById.has(link.target))
+        .map((link) => ({ ...link }));
+
+      const simulation = d3
+        .forceSimulation(nodes)
+        .force(
+          "link",
+          d3
+            .forceLink(links)
+            .id((d) => d.id)
+            .distance((d) => (d.source.type === "hyperedge" || d.target.type === "hyperedge" ? 30 : 60))
+            .strength(0.55)
+        )
+        .force("charge", d3.forceManyBody().strength(-100))
+        .force("collide", d3.forceCollide().radius((d) => (d.type === "vertex" ? 12 : 7)).strength(0.9))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+      const linkSelection = linkLayer
+        .selectAll("line")
+        .data(links)
+        .join("line")
+        .attr("stroke", (d) => `var(--${d.layer}, #8c8c8c)`)
+        .attr("stroke-width", 1.4);
+
+      const nodeSelection = nodeLayer
+        .selectAll("circle")
+        .data(nodes)
+        .join("circle")
+        .attr("r", (d) => (d.type === "vertex" ? 7.5 : 4.8))
+        .attr("fill", (d) => {
+          if (d.type === "hyperedge") {
+            return `var(--${d.layer}, #6B7280)`;
+          }
+          const firstLayer = d.layer_memberships[0] || "soil";
+          return `var(--${firstLayer}, #4c5c4a)`;
+        })
+        .attr("stroke", "#102a1e")
+        .attr("stroke-width", 0.6)
+        .style("cursor", "pointer")
+        .call(
+          d3
+            .drag()
+            .on("start", dragstarted)
+            .on("drag", dragged)
+            .on("end", dragended)
+        )
+        .on("click", (_event, node) => {
+          renderInspector(node, alertsByVertex.get(node.id) || [], nodeById, links);
+          if (node.type === "hyperedge") {
+            highlightHyperedge(node.id, nodeById, links, nodeSelection, linkSelection);
+          } else {
+            clearHyperedgeHighlight(nodeSelection, linkSelection);
+          }
+        });
+
+      const haloSelection = haloLayer
+        .selectAll("circle")
+        .data(nodes.filter((node) => alertsByVertex.has(node.id)))
+        .join("circle")
+        .attr("r", 10)
+        .attr("fill", "none")
+        .attr("stroke", (d) => {
+          const level = highestSeverity(alertsByVertex.get(d.id) || []);
+          if (level === "high") {
+            return "var(--danger)";
+          }
+          if (level === "medium") {
+            return "var(--warn)";
+          }
+          return "var(--info)";
+        })
+        .attr("stroke-width", 1.5)
+        .style("pointer-events", "none")
+        .style("animation", "pulse 1.8s ease-out infinite");
+
+      simulation.on("tick", () => {
+        linkSelection
+          .attr("x1", (d) => d.source.x)
+          .attr("y1", (d) => d.source.y)
+          .attr("x2", (d) => d.target.x)
+          .attr("y2", (d) => d.target.y);
+
+        nodeSelection.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
+        haloSelection.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
+      });
+
+      document.addEventListener("filters:changed", () => {
+        applyVisibilityFilters(nodes, links, nodeSelection, linkSelection);
+      });
+
+      applyVisibilityFilters(nodes, links, nodeSelection, linkSelection);
+
+      function dragstarted(event) {
+        if (!event.active) {
+          simulation.alphaTarget(0.3).restart();
+        }
+        event.subject.fx = event.subject.x;
+        event.subject.fy = event.subject.y;
+      }
+
+      function dragged(event) {
+        event.subject.fx = event.x;
+        event.subject.fy = event.y;
+      }
+
+      function dragended(event) {
+        if (!event.active) {
+          simulation.alphaTarget(0);
+        }
+        event.subject.fx = null;
+        event.subject.fy = null;
+      }
+    }
+
+    function applyVisibilityFilters(nodes, links, nodeSelection, linkSelection) {
+      const enabled = layerEnabled;
+      const activePair = activePairKey ? activePairKey.split("::") : null;
+
+      const visibleNodeIds = new Set(
+        nodes
+          .filter((node) => {
+            if (node.type === "hyperedge") {
+              return enabled.has(node.layer);
+            }
+            if (!node.layer_memberships || !node.layer_memberships.length) {
+              return true;
+            }
+            const anyVisible = node.layer_memberships.some((layer) => enabled.has(layer));
+            if (!anyVisible) {
+              return false;
+            }
+            if (!activePair) {
+              return true;
+            }
+            return node.layer_memberships.includes(activePair[0]) && node.layer_memberships.includes(activePair[1]);
+          })
+          .map((node) => node.id)
+      );
+
+      nodeSelection
+        .transition()
+        .duration(220)
+        .style("opacity", (node) => (visibleNodeIds.has(node.id) ? 1 : 0.06));
+
+      linkSelection
+        .transition()
+        .duration(220)
+        .style("opacity", (link) => {
+          const layerVisible = enabled.has(link.layer);
+          const endpointsVisible = visibleNodeIds.has(link.source.id || link.source) && visibleNodeIds.has(link.target.id || link.target);
+          return layerVisible && endpointsVisible ? 0.65 : 0.03;
+        });
+    }
+
+    function highlightHyperedge(hubId, nodeById, links, nodeSelection, linkSelection) {
+      const memberIds = new Set(
+        links
+          .filter((link) => (link.source.id || link.source) === hubId)
+          .map((link) => link.target.id || link.target)
+      );
+      memberIds.add(hubId);
+
+      nodeSelection
+        .transition()
+        .duration(180)
+        .style("opacity", (node) => (memberIds.has(node.id) ? 1 : 0.08));
+
+      linkSelection
+        .transition()
+        .duration(180)
+        .style("opacity", (link) => ((link.source.id || link.source) === hubId ? 0.95 : 0.06))
+        .attr("stroke-width", (link) => ((link.source.id || link.source) === hubId ? 2.4 : 1.1));
+    }
+
+    function clearHyperedgeHighlight(nodeSelection, linkSelection) {
+      nodeSelection.transition().duration(150).style("opacity", 1);
+      linkSelection.transition().duration(150).style("opacity", 0.65).attr("stroke-width", 1.4);
+    }
+
+    function renderInspector(node, alerts, nodeById, links) {
+      const inspector = document.getElementById("inspector");
+      inspector.innerHTML = "";
+
+      const headline = document.createElement("div");
+      headline.className = "inspector-card";
+      headline.innerHTML = `
+        <h3>${node.type === "vertex" ? "Vertex" : "Hyperedge"}</h3>
+        <div class="mono">${node.id}</div>
+      `;
+      inspector.appendChild(headline);
+
+      if (node.type === "vertex") {
+        const summary = document.createElement("div");
+        summary.className = "inspector-card";
+        summary.innerHTML = `
+          <div><strong>Type:</strong> ${node.vertex_type || "unknown"}</div>
+          <div><strong>Zone:</strong> ${node.zone_name || "unassigned"}</div>
+          <div><strong>Layers:</strong> ${(node.layer_memberships || []).join(", ") || "none"}</div>
+        `;
+        inspector.appendChild(summary);
+
+        const features = document.createElement("div");
+        features.className = "inspector-card";
+        const rows = Object.entries(node.features || {})
+          .map(([layer, values]) => `<tr><td>${layer}</td><td>${(values || []).map((v) => Number(v).toFixed(3)).join(", ")}</td></tr>`)
+          .join("");
+        features.innerHTML = `<h3>Features</h3><table><thead><tr><th>Layer</th><th>Vector</th></tr></thead><tbody>${rows || '<tr><td colspan="2">No features</td></tr>'}</tbody></table>`;
+        inspector.appendChild(features);
+      } else {
+        const neighbors = links
+          .filter((link) => (link.source.id || link.source) === node.id)
+          .map((link) => nodeById.get(link.target.id || link.target))
+          .filter(Boolean);
+
+        const summary = document.createElement("div");
+        summary.className = "inspector-card";
+        summary.innerHTML = `
+          <div><strong>Layer:</strong> ${node.layer || "unknown"}</div>
+          <div><strong>Members:</strong> ${neighbors.length}</div>
+          <div><strong>Metadata:</strong> <span class="mono">${escapeHtml(JSON.stringify(node.metadata || {}))}</span></div>
+        `;
+        inspector.appendChild(summary);
+
+        const members = document.createElement("div");
+        members.className = "inspector-card";
+        members.innerHTML = `<h3>Connected Vertices</h3><div class="mono">${neighbors.map((item) => item.id).join("<br>") || "none"}</div>`;
+        inspector.appendChild(members);
+      }
+
+      const alertCard = document.createElement("div");
+      alertCard.className = "inspector-card";
+      alertCard.innerHTML = "<h3>Alerts</h3>";
+      if (!alerts.length) {
+        alertCard.innerHTML += '<div class="muted">No active alerts.</div>';
+      } else {
+        alerts.forEach((alert) => {
+          const level = severityBucket(alert.severity);
+          const item = document.createElement("div");
+          item.className = `alert ${level}`;
+          item.innerHTML = `
+            <div><strong>${escapeHtml(alert.source)}</strong> (${escapeHtml(alert.severity)})</div>
+            <div class="mono">${escapeHtml(JSON.stringify(alert.payload || {}))}</div>
+          `;
+          alertCard.appendChild(item);
+        });
+      }
+      inspector.appendChild(alertCard);
+    }
+
+    function highestSeverity(alerts) {
+      let score = 0;
+      alerts.forEach((item) => {
+        const bucket = severityBucket(item.severity);
+        if (bucket === "high") {
+          score = Math.max(score, 3);
+        } else if (bucket === "medium") {
+          score = Math.max(score, 2);
+        } else {
+          score = Math.max(score, 1);
+        }
+      });
+      if (score === 3) {
+        return "high";
+      }
+      if (score === 2) {
+        return "medium";
+      }
+      return "low";
+    }
+
+    function severityBucket(value) {
+      const token = String(value || "").toLowerCase();
+      if (["critical", "high", "severe", "danger"].includes(token)) {
+        return "high";
+      }
+      if (["medium", "warning", "warn"].includes(token)) {
+        return "medium";
+      }
+      return "low";
+    }
+
+    function showError(message) {
+      const error = document.getElementById("error");
+      error.textContent = message;
+      error.classList.remove("hidden");
+      document.getElementById("loading").classList.add("hidden");
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+  </script>
+</body>
+</html>

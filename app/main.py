@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
 from sqlalchemy import select, text
 
@@ -197,4 +198,7 @@ app.include_router(ingest.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(ask.router, prefix="/api/v1")
+# Auth provisioning endpoints are intentionally external for this portfolio service.
+# Users/API keys are currently managed via seed/admin tooling, not public API routes.
 app.include_router(ws.router)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")

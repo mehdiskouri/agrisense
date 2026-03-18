@@ -1,18 +1,50 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.auth.dependencies import AuthPrincipal, require_machine_scope
+from app.auth.dependencies import (
+    AuthPrincipal,
+    _api_key_digest,
+    _resolve_api_key,
+    require_machine_scope,
+)
 from app.auth.jwt import AuthError, create_access_token, decode_token
+from app.auth.models import APIKey
 from app.main import app
 from app.models.enums import UserRoleEnum
 from app.services.farm_service import FarmService
+
+
+class _ScalarRow:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> object:
+        return self._value
+
+
+class _ScalarsResult:
+    def __init__(self, values: list[object]) -> None:
+        self._values = values
+
+    def all(self) -> list[object]:
+        return self._values
+
+
+class _ListRow:
+    def __init__(self, values: list[object]) -> None:
+        self._values = values
+
+    def scalars(self) -> _ScalarsResult:
+        return _ScalarsResult(self._values)
 
 
 @pytest.mark.asyncio
@@ -111,6 +143,85 @@ async def test_machine_scope_enforcement_for_api_key_principal() -> None:
     )
     result = await dependency(allowed)
     assert result.scopes == {"jobs"}
+
+
+@pytest.mark.asyncio
+async def test_machine_scope_rejects_jwt_principal() -> None:
+    dependency = require_machine_scope("ingest")
+    principal = AuthPrincipal(
+        auth_type="jwt",
+        subject_id=uuid4(),
+        role=UserRoleEnum.admin,
+        scopes=set(),
+        api_key_id=None,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await dependency(principal)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "api_key_required"
+
+
+@pytest.mark.asyncio
+async def test_machine_scope_accepts_write_prefixed_legacy_scope() -> None:
+    dependency = require_machine_scope("ingest")
+    principal = AuthPrincipal(
+        auth_type="api_key",
+        subject_id=uuid4(),
+        role=UserRoleEnum.field_operator,
+        scopes={"write:ingest"},
+        api_key_id=uuid4(),
+    )
+
+    result = await dependency(principal)
+    assert result.api_key_id is not None
+
+
+@pytest.mark.asyncio
+async def test_resolve_api_key_prefers_digest_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    plaintext = "test-machine-key"
+    digest = _api_key_digest(plaintext)
+    api_key = APIKey(
+        user_id=uuid4(),
+        key_hash=digest,
+        name="digest",
+        scopes={"ingest": True},
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+        is_active=True,
+    )
+
+    fake_db = SimpleNamespace(execute=AsyncMock(side_effect=[_ScalarRow(api_key)]))
+    verify = AsyncMock(return_value=False)
+    monkeypatch.setattr("app.auth.dependencies.pwd_context.verify", verify)
+
+    resolved = await _resolve_api_key(fake_db, plaintext)  # type: ignore[arg-type]
+    assert resolved is api_key
+    verify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_api_key_legacy_bcrypt_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    plaintext = "legacy-bcrypt-key"
+    api_key = APIKey(
+        user_id=uuid4(),
+        key_hash="$2b$12$legacyplaceholderhash",
+        name="legacy",
+        scopes={"ingest": True},
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+        is_active=True,
+    )
+
+    fake_db = SimpleNamespace(
+        execute=AsyncMock(side_effect=[_ScalarRow(None), _ListRow([api_key])])
+    )
+    monkeypatch.setattr(
+        "app.auth.dependencies.pwd_context.verify",
+        lambda plain, _: plain == plaintext,
+    )
+
+    resolved = await _resolve_api_key(fake_db, plaintext)  # type: ignore[arg-type]
+    assert resolved is api_key
 
 
 @pytest.mark.asyncio

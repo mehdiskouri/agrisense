@@ -28,7 +28,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_factory() as session:
         try:
             yield session
-            await session.commit()
+            if session.new or session.dirty or session.deleted:
+                await session.commit()
+            elif session.in_transaction():
+                # Explicitly close read-only transactions opened by SELECT statements.
+                await session.rollback()
         except Exception:
             await session.rollback()
             raise

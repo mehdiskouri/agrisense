@@ -18,9 +18,11 @@ from app.schemas.farm import (
     FarmRead,
     VertexCreate,
     VertexRead,
+    VisualizationResponse,
     ZoneCreate,
     ZoneRead,
 )
+from app.services.analytics_service import AnalyticsService
 from app.services.farm_service import FarmService
 
 router = APIRouter(prefix="/farms", tags=["farms"])
@@ -187,3 +189,23 @@ async def get_graph(
     except Exception as exc:
         raise _map_error(exc) from exc
     return FarmGraphRead(**graph_state)
+
+
+@router.get("/{farm_id}/visualization", response_model=VisualizationResponse)
+async def get_visualization(
+    farm_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(
+        require_role(
+            UserRoleEnum.admin,
+            UserRoleEnum.agronomist,
+            UserRoleEnum.field_operator,
+            UserRoleEnum.readonly,
+        )
+    ),
+) -> VisualizationResponse:
+    service = AnalyticsService(db)
+    try:
+        return await service.get_visualization(farm_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc

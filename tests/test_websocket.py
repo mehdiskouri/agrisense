@@ -40,8 +40,9 @@ def test_websocket_live_feed_forwards_events(fake_redis: Any, monkeypatch: Any) 
     app.router.lifespan_context = _noop_lifespan
     with (
         TestClient(app) as client,
-        client.websocket_connect(f"/ws/{farm_id}/live?token=test-token") as websocket,
+        client.websocket_connect(f"/ws/{farm_id}/live") as websocket,
     ):
+        websocket.send_json({"type": "auth", "token": "test-token"})
         payload = websocket.receive_json()
         assert payload["event_type"] == "ingest"
         assert payload["layer"] == "soil"
@@ -69,8 +70,9 @@ def test_websocket_without_redis_returns_error(monkeypatch: Any) -> None:
     app.router.lifespan_context = _noop_lifespan
     with (
         TestClient(app) as client,
-        client.websocket_connect(f"/ws/{farm_id}/live?token=test-token") as websocket,
+        client.websocket_connect(f"/ws/{farm_id}/live") as websocket,
     ):
+        websocket.send_json({"type": "auth", "token": "test-token"})
         payload = websocket.receive_json()
         assert payload["error"] == "redis_unavailable"
     app.router.lifespan_context = original_lifespan
@@ -83,7 +85,7 @@ def test_websocket_invalid_farm_id_returns_error(fake_redis: Any) -> None:
     app.router.lifespan_context = _noop_lifespan
     with (
         TestClient(app) as client,
-        client.websocket_connect("/ws/not-a-uuid/live?token=test-token") as websocket,
+        client.websocket_connect("/ws/not-a-uuid/live") as websocket,
     ):
         payload = websocket.receive_json()
         assert payload["error"] == "invalid_farm_id"
@@ -105,8 +107,9 @@ def test_websocket_unknown_farm_returns_error(fake_redis: Any, monkeypatch: Any)
     app.router.lifespan_context = _noop_lifespan
     with (
         TestClient(app) as client,
-        client.websocket_connect(f"/ws/{uuid4()}/live?token=test-token") as websocket,
+        client.websocket_connect(f"/ws/{uuid4()}/live") as websocket,
     ):
+        websocket.send_json({"type": "auth", "token": "test-token"})
         payload = websocket.receive_json()
         assert payload["error"] == "farm_not_found"
     app.router.lifespan_context = original_lifespan
@@ -117,6 +120,7 @@ def test_websocket_missing_token_rejected(fake_redis: Any, monkeypatch: Any) -> 
         return True
 
     monkeypatch.setattr(ws, "_farm_exists", fake_farm_exists)
+    monkeypatch.setattr(ws, "AUTH_MESSAGE_TIMEOUT_SECONDS", 0.01)
     app.state.redis = fake_redis
 
     original_lifespan = app.router.lifespan_context
@@ -142,8 +146,9 @@ def test_websocket_invalid_token_rejected(fake_redis: Any, monkeypatch: Any) -> 
     app.router.lifespan_context = _noop_lifespan
     with (
         TestClient(app) as client,
-        client.websocket_connect(f"/ws/{uuid4()}/live?token=bad-token") as websocket,
+        client.websocket_connect(f"/ws/{uuid4()}/live") as websocket,
     ):
+        websocket.send_json({"type": "auth", "token": "bad-token"})
         payload = websocket.receive_json()
         assert payload["error"] == "auth_invalid"
     app.router.lifespan_context = original_lifespan

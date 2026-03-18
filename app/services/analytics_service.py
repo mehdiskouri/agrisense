@@ -12,8 +12,9 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.enums import FarmTypeEnum
+from app.models.enums import FarmTypeEnum, JobStatusEnum
 from app.models.farm import Vertex
+from app.models.jobs import BacktestJob
 from app.schemas.analytics import (
     AlertItem,
     AlertsResponse,
@@ -31,8 +32,53 @@ from app.schemas.analytics import (
     ZoneDetailResponse,
     ZoneStatus,
 )
+from app.schemas.farm import (
+    CrossLayerSummary,
+    VisualizationAlertItem,
+    VisualizationLayerMeta,
+    VisualizationLink,
+    VisualizationNode,
+    VisualizationResponse,
+)
 from app.services import julia_bridge
 from app.services.farm_service import FarmService
+
+LAYER_VIS_META: dict[str, dict[str, Any]] = {
+    "soil": {
+        "color": "#8B4513",
+        "feature_names": ["moisture", "temperature", "ph", "conductivity"],
+    },
+    "irrigation": {
+        "color": "#1E90FF",
+        "feature_names": ["flow_rate", "valve_state", "pressure"],
+    },
+    "lighting": {
+        "color": "#FFD700",
+        "feature_names": ["intensity", "spectrum", "duration"],
+    },
+    "weather": {
+        "color": "#87CEEB",
+        "feature_names": [
+            "temperature",
+            "humidity",
+            "wind_speed",
+            "precipitation",
+            "solar_radiation",
+        ],
+    },
+    "crop_requirements": {
+        "color": "#228B22",
+        "feature_names": ["water_need", "npk_n", "npk_p", "npk_k", "growth_stage"],
+    },
+    "npk": {
+        "color": "#FF6347",
+        "feature_names": ["nitrogen", "phosphorus", "potassium"],
+    },
+    "vision": {
+        "color": "#9370DB",
+        "feature_names": ["health_index", "canopy_cover", "stress_score", "growth_rate"],
+    },
+}
 
 
 class AnalyticsService:
@@ -45,6 +91,81 @@ class AnalyticsService:
     @staticmethod
     def _backtest_job_key(job_id: uuid.UUID) -> str:
         return f"analytics:yield_backtest:job:{job_id}"
+
+    @staticmethod
+    def _serialize_backtest_job(job: BacktestJob) -> dict[str, Any]:
+        return {
+            "job_id": str(job.id),
+            "farm_id": str(job.farm_id),
+            "n_folds": int(job.n_folds),
+            "min_history": int(job.min_history),
+            "status": job.status.value,
+            "created_at": job.created_at.isoformat(),
+            "updated_at": job.updated_at.isoformat(),
+            "completed_at": job.completed_at.isoformat() if job.completed_at is not None else None,
+            "error": job.error,
+            "result": job.result,
+        }
+
+    @staticmethod
+    def _status_from_payload(payload: dict[str, Any]) -> BacktestJobStatusResponse:
+        completed_at_raw = payload.get("completed_at")
+        completed_at = (
+            datetime.fromisoformat(completed_at_raw) if isinstance(completed_at_raw, str) else None
+        )
+        result_payload = payload.get("result")
+        result_dict = result_payload if isinstance(result_payload, dict) else None
+
+        return BacktestJobStatusResponse(
+            job_id=uuid.UUID(str(payload["job_id"])),
+            farm_id=uuid.UUID(str(payload["farm_id"])),
+            status=str(payload.get("status") or "queued"),
+            created_at=datetime.fromisoformat(str(payload["created_at"])),
+            updated_at=datetime.fromisoformat(str(payload["updated_at"])),
+            completed_at=completed_at,
+            error=str(payload["error"]) if payload.get("error") is not None else None,
+            result=result_dict,
+        )
+
+    async def _persist_backtest_cache(self, job: BacktestJob) -> None:
+        if self.redis_client is None:
+            return
+        await self.redis_client.setex(
+            self._backtest_job_key(job.id),
+            self.BACKTEST_JOB_TTL_SECONDS,
+            json.dumps(self._serialize_backtest_job(job)),
+        )
+
+    async def _read_backtest_cache(self, job_id: uuid.UUID) -> BacktestJobStatusResponse | None:
+        if self.redis_client is None:
+            return None
+        raw = await self.redis_client.get(self._backtest_job_key(job_id))
+        if raw is None:
+            return None
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return None
+        return self._status_from_payload(payload)
+
+    async def _require_backtest_job(self, job_id: uuid.UUID) -> BacktestJob:
+        row = await self.db.execute(select(BacktestJob).where(BacktestJob.id == job_id))
+        job = row.scalar_one_or_none()
+        if job is None:
+            raise LookupError(f"Backtest job {job_id} not found")
+        return job
+
+    @staticmethod
+    def _to_backtest_status(job: BacktestJob) -> BacktestJobStatusResponse:
+        return BacktestJobStatusResponse(
+            job_id=job.id,
+            farm_id=job.farm_id,
+            status=job.status.value,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+            completed_at=job.completed_at,
+            error=job.error,
+            result=job.result,
+        )
 
     async def _ensure_graph(self, farm_id: uuid.UUID) -> None:
         """Ensure graph is built and cached in Julia for this farm."""
@@ -247,98 +368,57 @@ class AnalyticsService:
         min_history: int,
     ) -> BacktestJobCreateResponse:
         await FarmService(self.db).get_farm(farm_id)
-        if self.redis_client is None:
-            raise RuntimeError("redis is required for async backtest jobs")
 
-        now = datetime.now(UTC)
-        job_id = uuid.uuid4()
-        payload = {
-            "job_id": str(job_id),
-            "farm_id": str(farm_id),
-            "n_folds": int(n_folds),
-            "min_history": int(min_history),
-            "status": "queued",
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-            "completed_at": None,
-            "error": None,
-            "result": None,
-        }
-        await self.redis_client.setex(
-            self._backtest_job_key(job_id),
-            self.BACKTEST_JOB_TTL_SECONDS,
-            json.dumps(payload),
+        job = BacktestJob(
+            farm_id=farm_id,
+            status=JobStatusEnum.queued,
+            n_folds=int(n_folds),
+            min_history=int(min_history),
+            error=None,
+            result=None,
         )
+        self.db.add(job)
+        await self.db.flush()
+        await self.db.refresh(job)
+        await self._persist_backtest_cache(job)
+
         return BacktestJobCreateResponse(
-            job_id=job_id,
+            job_id=job.id,
             farm_id=farm_id,
             status="queued",
-            created_at=now,
+            created_at=job.created_at,
         )
 
     async def execute_yield_backtest_job(self, job_id: uuid.UUID) -> BacktestJobStatusResponse:
-        if self.redis_client is None:
-            raise RuntimeError("redis is required for async backtest jobs")
-
-        key = self._backtest_job_key(job_id)
-        raw = await self.redis_client.get(key)
-        if raw is None:
-            raise LookupError(f"Backtest job {job_id} not found")
-
-        payload = json.loads(raw)
-        farm_id = uuid.UUID(str(payload["farm_id"]))
-        n_folds = int(payload.get("n_folds", 5))
-        min_history = int(payload.get("min_history", 24))
-
-        now = datetime.now(UTC)
-        payload["status"] = "running"
-        payload["updated_at"] = now.isoformat()
-        await self.redis_client.setex(key, self.BACKTEST_JOB_TTL_SECONDS, json.dumps(payload))
+        job = await self._require_backtest_job(job_id)
+        job.status = JobStatusEnum.running
+        job.error = None
+        await self.db.flush()
+        await self._persist_backtest_cache(job)
 
         try:
-            result = await self.run_yield_backtest(farm_id, n_folds=n_folds)
-            payload["status"] = "succeeded"
-            payload["result"] = result.model_dump(mode="json")
-            payload["error"] = None
+            result = await self.run_yield_backtest(job.farm_id, n_folds=job.n_folds)
+            job.status = JobStatusEnum.succeeded
+            job.result = result.model_dump(mode="json")
+            job.error = None
         except Exception as exc:
-            payload["status"] = "failed"
-            payload["error"] = str(exc)
-            payload["result"] = None
+            job.status = JobStatusEnum.failed
+            job.error = str(exc)
+            job.result = None
 
-        completed = datetime.now(UTC)
-        payload["updated_at"] = completed.isoformat()
-        payload["completed_at"] = completed.isoformat()
-        payload["min_history"] = min_history
-        await self.redis_client.setex(key, self.BACKTEST_JOB_TTL_SECONDS, json.dumps(payload))
-
-        return await self.get_yield_backtest_job_status(job_id)
+        job.completed_at = datetime.now(UTC)
+        await self.db.flush()
+        await self._persist_backtest_cache(job)
+        return self._to_backtest_status(job)
 
     async def get_yield_backtest_job_status(self, job_id: uuid.UUID) -> BacktestJobStatusResponse:
-        if self.redis_client is None:
-            raise RuntimeError("redis is required for async backtest jobs")
+        cached = await self._read_backtest_cache(job_id)
+        if cached is not None:
+            return cached
 
-        raw = await self.redis_client.get(self._backtest_job_key(job_id))
-        if raw is None:
-            raise LookupError(f"Backtest job {job_id} not found")
-        payload = json.loads(raw)
-
-        completed_at_raw = payload.get("completed_at")
-        completed_at = (
-            datetime.fromisoformat(completed_at_raw) if isinstance(completed_at_raw, str) else None
-        )
-        result_payload = payload.get("result")
-        result_dict = result_payload if isinstance(result_payload, dict) else None
-
-        return BacktestJobStatusResponse(
-            job_id=uuid.UUID(str(payload["job_id"])),
-            farm_id=uuid.UUID(str(payload["farm_id"])),
-            status=str(payload.get("status") or "queued"),
-            created_at=datetime.fromisoformat(str(payload["created_at"])),
-            updated_at=datetime.fromisoformat(str(payload["updated_at"])),
-            completed_at=completed_at,
-            error=str(payload["error"]) if payload.get("error") is not None else None,
-            result=result_dict,
-        )
+        job = await self._require_backtest_job(job_id)
+        await self._persist_backtest_cache(job)
+        return self._to_backtest_status(job)
 
     async def get_active_alerts(self, farm_id: uuid.UUID) -> AlertsResponse:
         farm_service = FarmService(self.db)
@@ -391,6 +471,158 @@ class AnalyticsService:
             farm_id=farm_id,
             generated_at=datetime.now(UTC),
             zones=zone_payload,
+        )
+
+    async def get_visualization(self, farm_id: uuid.UUID) -> VisualizationResponse:
+        farm_service = FarmService(self.db)
+        farm = await farm_service.get_farm(farm_id)
+        graph_state = await farm_service.get_graph(farm_id)
+
+        vertex_rows = {str(vertex.id): vertex for vertex in farm.vertices}
+        zone_names = {str(zone.id): zone.name for zone in farm.zones}
+        layer_memberships: dict[str, set[str]] = defaultdict(set)
+        vertex_features: dict[str, dict[str, list[float]]] = defaultdict(dict)
+        layer_vertex_presence: dict[str, set[str]] = defaultdict(set)
+
+        links: list[VisualizationLink] = []
+        nodes: list[VisualizationNode] = []
+        layer_stats: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"n_edges": 0, "n_vertices": 0}
+        )
+
+        layers_payload = graph_state.get("layers")
+        layers_data = layers_payload if isinstance(layers_payload, dict) else {}
+
+        for layer_name, layer_raw in layers_data.items():
+            layer = layer_raw if isinstance(layer_raw, dict) else {}
+            edge_ids = [str(item) for item in (layer.get("edge_ids") or [])]
+            edge_meta = layer.get("edge_metadata") or []
+            incidence_rows = [int(item) for item in (layer.get("incidence_rows") or [])]
+            incidence_cols = [int(item) for item in (layer.get("incidence_cols") or [])]
+            vertex_ids = [str(item) for item in (layer.get("vertex_ids") or [])]
+            feature_matrix = layer.get("vertex_features") or []
+
+            row_to_vertex_id = {idx + 1: vertex_id for idx, vertex_id in enumerate(vertex_ids)}
+
+            # Build per-layer current feature vectors for each vertex.
+            for row_idx, row in enumerate(feature_matrix):
+                if not isinstance(row, list):
+                    continue
+                vertex_id = row_to_vertex_id.get(row_idx + 1)
+                if vertex_id is None:
+                    continue
+                vector = [float(value) for value in row if isinstance(value, (int, float))]
+                if vector:
+                    vertex_features[vertex_id][str(layer_name)] = vector
+
+            edge_members: dict[int, set[str]] = defaultdict(set)
+            for inc_row, inc_col in zip(incidence_rows, incidence_cols, strict=False):
+                vertex_id = row_to_vertex_id.get(inc_row)
+                if vertex_id is None:
+                    continue
+                edge_members[inc_col].add(vertex_id)
+                layer_memberships[vertex_id].add(str(layer_name))
+                layer_vertex_presence[str(layer_name)].add(vertex_id)
+
+            for edge_index, edge_id in enumerate(edge_ids, start=1):
+                hub_id = f"he:{layer_name}:{edge_id}"
+                metadata = (
+                    edge_meta[edge_index - 1]
+                    if edge_index - 1 < len(edge_meta)
+                    and isinstance(edge_meta[edge_index - 1], dict)
+                    else {}
+                )
+                members = sorted(edge_members.get(edge_index, set()))
+                nodes.append(
+                    VisualizationNode(
+                        id=hub_id,
+                        type="hyperedge",
+                        layer=str(layer_name),
+                        metadata=metadata,
+                        member_count=len(members),
+                        layer_memberships=[str(layer_name)],
+                    )
+                )
+                for vertex_id in members:
+                    links.append(
+                        VisualizationLink(source=hub_id, target=vertex_id, layer=str(layer_name))
+                    )
+
+            layer_stats[str(layer_name)] = {
+                "n_edges": len(edge_ids),
+                "n_vertices": len(layer_vertex_presence[str(layer_name)]),
+            }
+
+        known_vertex_ids = set(vertex_rows.keys()) | set(vertex_features.keys())
+        for vertex_id in sorted(known_vertex_ids):
+            vertex = vertex_rows.get(vertex_id)
+            zone_id = (
+                str(vertex.zone_id) if vertex is not None and vertex.zone_id is not None else None
+            )
+            nodes.append(
+                VisualizationNode(
+                    id=vertex_id,
+                    type="vertex",
+                    vertex_type=(vertex.vertex_type.value if vertex is not None else None),
+                    zone_id=uuid.UUID(zone_id) if zone_id is not None else None,
+                    zone_name=zone_names.get(zone_id) if zone_id is not None else None,
+                    features=vertex_features.get(vertex_id, {}),
+                    layer_memberships=sorted(layer_memberships.get(vertex_id, set())),
+                )
+            )
+
+        layer_metas: list[VisualizationLayerMeta] = []
+        for layer_name in sorted(layers_data.keys()):
+            meta = LAYER_VIS_META.get(str(layer_name), {"color": "#6B7280", "feature_names": []})
+            stats = layer_stats.get(str(layer_name), {"n_edges": 0, "n_vertices": 0})
+            layer_metas.append(
+                VisualizationLayerMeta(
+                    name=str(layer_name),
+                    color=str(meta["color"]),
+                    feature_names=[str(item) for item in meta.get("feature_names", [])],
+                    n_edges=int(stats["n_edges"]),
+                    n_vertices=int(stats["n_vertices"]),
+                )
+            )
+
+        alerts_response = await self.get_active_alerts(farm_id)
+        flat_alerts: list[VisualizationAlertItem] = []
+        for zone_alerts in alerts_response.zones:
+            for alert in zone_alerts.alerts:
+                payload = alert.payload if isinstance(alert.payload, dict) else {}
+                vertex_token = payload.get("vertex_id")
+                flat_alerts.append(
+                    VisualizationAlertItem(
+                        vertex_id=str(vertex_token) if vertex_token is not None else None,
+                        source=alert.source,
+                        severity=alert.severity,
+                        payload=payload,
+                    )
+                )
+
+        cross_layer: list[CrossLayerSummary] = []
+        ordered_layers = sorted(layer_vertex_presence.keys())
+        for index, layer_a in enumerate(ordered_layers):
+            for layer_b in ordered_layers[index + 1 :]:
+                shared = len(layer_vertex_presence[layer_a] & layer_vertex_presence[layer_b])
+                cross_layer.append(
+                    CrossLayerSummary(
+                        layer_a=layer_a,
+                        layer_b=layer_b,
+                        shared_vertices=shared,
+                    )
+                )
+
+        return VisualizationResponse(
+            farm_id=farm.id,
+            farm_name=farm.name,
+            farm_type=farm.farm_type,
+            generated_at=datetime.now(UTC),
+            layers=layer_metas,
+            nodes=nodes,
+            links=links,
+            alerts=flat_alerts,
+            cross_layer_summary=cross_layer,
         )
 
     async def _build_cross_layer(
