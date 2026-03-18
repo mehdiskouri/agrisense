@@ -787,8 +787,13 @@ function _quantile_regression_irls(
     iterations::Int=10,
 )::Vector{Float32}
     n, p = size(X)
-    yv = copy(y)
+    yv = Float32[isfinite(v) ? v : 0.0f0 for v in y]
     Xv = hcat(ones(Float32, n), X)
+    @inbounds for i in eachindex(Xv)
+        if !isfinite(Xv[i])
+            Xv[i] = 0.0f0
+        end
+    end
     β = zeros(Float32, p + 1)
 
     if HAS_CUDA
@@ -827,16 +832,31 @@ function _quantile_regression_irls(
         r = yv .- pred
         w = similar(r)
         @inbounds for i in eachindex(r)
-            w[i] = r[i] >= 0.0f0 ? q : (1.0f0 - q)
+            ri = r[i]
+            if !isfinite(ri)
+                w[i] = 0.5f0
+            else
+                w[i] = ri >= 0.0f0 ? q : (1.0f0 - q)
+            end
         end
         W = Diagonal(w)
         Ireg = Matrix{Float32}(I, p + 1, p + 1)
         lhs = Xv' * W * Xv + λ * Ireg
         rhs = Xv' * W * yv
+        @inbounds for i in eachindex(lhs)
+            if !isfinite(lhs[i])
+                lhs[i] = 0.0f0
+            end
+        end
+        @inbounds for i in eachindex(rhs)
+            if !isfinite(rhs[i])
+                rhs[i] = 0.0f0
+            end
+        end
         try
             β = lhs \ rhs
         catch err
-            if err isa LinearAlgebra.SingularException
+            if err isa LinearAlgebra.SingularException || err isa ArgumentError
                 β = pinv(lhs) * rhs
             else
                 rethrow(err)

@@ -460,6 +460,19 @@ end
             @test !isnan(r["yield_estimate_kg_m2"])
         end
     end
+
+    @testset "quantile regression tolerates NaN/Inf inputs" begin
+        X = Float32[
+            1.0  2.0;
+            NaN  4.0;
+            5.0  Inf;
+            7.0  8.0;
+        ]
+        y = Float32[1.0, NaN, 3.0, Inf]
+        β = AgriSenseCore._quantile_regression_irls(X, y, 0.5f0; λ=1.0f-3, iterations=4)
+        @test length(β) == size(X, 2) + 1
+        @test all(isfinite.(β))
+    end
 end
 
 # ===========================================================================
