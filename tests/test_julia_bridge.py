@@ -45,6 +45,31 @@ class _FakeModule:
         self.last_call = ("yield_forecast", (graph_state,), {})
         return [{"yield": "ok"}]
 
+    def yield_forecast_ensemble(
+        self,
+        graph_state: dict[str, object],
+        include_members: bool = False,
+    ) -> list[dict[str, object]]:
+        self.last_call = (
+            "yield_forecast_ensemble",
+            (graph_state,),
+            {"include_members": include_members},
+        )
+        return [{"yield": "ensemble", "include_members": include_members}]
+
+    def backtest_yield(
+        self,
+        graph_state: dict[str, object],
+        n_folds: int = 5,
+        min_history: int = 24,
+    ) -> dict[str, object]:
+        self.last_call = (
+            "backtest_yield",
+            (graph_state,),
+            {"n_folds": n_folds, "min_history": min_history},
+        )
+        return {"status": "ok", "n_folds": n_folds}
+
     def detect_anomalies(self, graph_state: dict[str, object]) -> list[dict[str, object]]:
         self.last_call = ("detect_anomalies", (graph_state,), {})
         return [{"anomaly": "ok"}]
@@ -197,7 +222,12 @@ def test_wrapper_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert julia_bridge.nutrient_report(farm_id)[0]["nutrient"] == "ok"
     assert julia_bridge.yield_forecast(farm_id)[0]["yield"] == "ok"
+    assert (
+        julia_bridge.yield_forecast_ensemble(farm_id, include_members=True)[0]["yield"]
+        == "ensemble"
+    )
     assert julia_bridge.detect_anomalies(farm_id)[0]["anomaly"] == "ok"
+    assert julia_bridge.backtest_yield(farm_id, n_folds=7)["n_folds"] == 7
 
     cross = julia_bridge.cross_layer_query(farm_id, "soil", "weather")
     assert cross["layer_a"] == ":soil"

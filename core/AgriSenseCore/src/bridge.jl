@@ -82,6 +82,29 @@ function yield_forecast(graph_state::Dict)::Vector{Dict{String,Any}}
 end
 
 """
+    yield_forecast_ensemble(graph_state::Dict; include_members::Bool=false) -> Vector{Dict}
+"""
+function yield_forecast_ensemble(
+    graph_state::Dict;
+    include_members::Bool=false,
+)::Vector{Dict{String,Any}}
+    graph = _get_graph(graph_state)
+    return compute_ensemble_yield_forecast(graph; include_members=include_members)
+end
+
+"""
+    backtest_yield(graph_state::Dict; n_folds::Int=5, min_history::Int=24) -> Dict
+"""
+function backtest_yield(
+    graph_state::Dict;
+    n_folds::Int=5,
+    min_history::Int=24,
+)::Dict{String,Any}
+    graph = _get_graph(graph_state)
+    return backtest_yield_ensemble(graph; n_folds=n_folds, min_history=min_history)
+end
+
+"""
     detect_anomalies(graph_state::Dict) -> Vector{Dict}
 """
 function detect_anomalies(graph_state::Dict)::Vector{Dict{String,Any}}
@@ -196,17 +219,16 @@ Returns a status dict.
 function train_yield_residual(graph_state::Dict,
                                outcomes::Dict)::Dict{String,Any}
     graph = _get_graph(graph_state)
-    farm_id = graph.farm_id
     actual = Dict{String,Float32}(
         string(k) => Float32(v) for (k, v) in outcomes
     )
-    train_yield_residual!(graph, actual)
-    coeffs = get_residual_coefficients(farm_id)
-    has_coeff = coeffs !== nothing
+    trained = train_yield_residual!(graph, actual)
+    coeffs = get_residual_coefficients(graph.farm_id)
+    n_coeff = coeffs === nothing ? 0 : length(coeffs)
     return Dict{String,Any}(
-        "status" => has_coeff ? "trained" : "insufficient_data",
+        "status" => trained ? "trained" : "insufficient_data",
         "n_observations" => length(actual),
-        "n_coefficients" => has_coeff ? length(coeffs) : 0,
+        "n_coefficients" => n_coeff,
     )
 end
 

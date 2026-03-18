@@ -188,6 +188,46 @@ def yield_forecast(farm_id: str) -> list[dict[str, Any]]:
         raise JuliaBridgeError(f"yield_forecast failed: {exc}") from exc
 
 
+def yield_forecast_ensemble(
+    farm_id: str,
+    include_members: bool = False,
+) -> list[dict[str, Any]]:
+    start = time.perf_counter()
+    module = _require_module()
+    try:
+        result = module.yield_forecast_ensemble(
+            {"farm_id": str(farm_id)},
+            include_members=bool(include_members),
+        )
+        parsed = ensure_record_list(_from_julia(result), context="yield_forecast_ensemble")
+        _bridge_timing("yield_forecast_ensemble", start, True)
+        return parsed
+    except Exception as exc:
+        _bridge_timing("yield_forecast_ensemble", start, False, str(exc))
+        raise JuliaBridgeError(f"yield_forecast_ensemble failed: {exc}") from exc
+
+
+def backtest_yield(
+    farm_id: str,
+    n_folds: int = 5,
+    min_history: int = 24,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    module = _require_module()
+    try:
+        result = module.backtest_yield(
+            {"farm_id": str(farm_id)},
+            n_folds=int(n_folds),
+            min_history=int(min_history),
+        )
+        parsed = ensure_record(_from_julia(result), context="backtest_yield")
+        _bridge_timing("backtest_yield", start, True)
+        return parsed
+    except Exception as exc:
+        _bridge_timing("backtest_yield", start, False, str(exc))
+        raise JuliaBridgeError(f"backtest_yield failed: {exc}") from exc
+
+
 def detect_anomalies(farm_id: str) -> list[dict[str, Any]]:
     start = time.perf_counter()
     module = _require_module()

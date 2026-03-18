@@ -13,6 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.analytics import (
     AlertsResponse,
+    BacktestJobCreateResponse,
+    BacktestJobStatusResponse,
+    BacktestResponse,
+    EnsembleYieldForecastResponse,
     FarmStatusResponse,
     IrrigationScheduleResponse,
     ZoneAlerts,
@@ -177,4 +181,163 @@ async def test_alerts_endpoint_and_openapi_contract(
     assert "/api/v1/analytics/{farm_id}/irrigation/schedule" in paths
     assert "/api/v1/analytics/{farm_id}/nutrients/report" in paths
     assert "/api/v1/analytics/{farm_id}/yield/forecast" in paths
+    assert "/api/v1/analytics/{farm_id}/yield/forecast/ensemble" in paths
+    assert "/api/v1/analytics/{farm_id}/yield/backtest" in paths
+    assert "/api/v1/analytics/{farm_id}/yield/backtest/async" in paths
+    assert "/api/v1/analytics/{farm_id}/yield/backtest/jobs/{job_id}" in paths
     assert "/api/v1/analytics/{farm_id}/alerts" in paths
+
+
+@pytest.mark.asyncio
+async def test_ensemble_yield_forecast_endpoint(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    farm_id = uuid4()
+
+    async def fake_ensemble(
+        self: AnalyticsService,
+        _farm_id: object,
+        include_members: bool,
+    ) -> EnsembleYieldForecastResponse:
+        assert include_members is True
+        return EnsembleYieldForecastResponse(
+            farm_id=farm_id,
+            generated_at=datetime.now(UTC),
+            include_members=True,
+            ensemble_weights={
+                "fao_single": 0.4,
+                "exp_smoothing": 0.3,
+                "quantile_regression": 0.3,
+            },
+            items=[
+                {
+                    "crop_bed_id": "bed-1",
+                    "yield_estimate_kg_m2": 4.2,
+                    "yield_lower": 3.6,
+                    "yield_upper": 4.9,
+                    "confidence": 0.9,
+                    "stress_factors": {"Ks": 0.8},
+                    "model_layer": "ensemble",
+                    "ensemble_weights": {
+                        "fao_single": 0.4,
+                        "exp_smoothing": 0.3,
+                        "quantile_regression": 0.3,
+                    },
+                    "ensemble_members": [
+                        {
+                            "model_name": "fao_single",
+                            "yield_estimate": 4.1,
+                            "lower": 3.5,
+                            "upper": 4.8,
+                            "weight": 0.4,
+                        }
+                    ],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(AnalyticsService, "get_ensemble_yield_forecast", fake_ensemble)
+
+    response = await client.get(
+        f"/api/v1/analytics/{farm_id}/yield/forecast/ensemble?include_members=true"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["farm_id"] == str(farm_id)
+    assert body["include_members"] is True
+    assert body["items"][0]["model_layer"] == "ensemble"
+
+
+@pytest.mark.asyncio
+async def test_yield_backtest_endpoint(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    farm_id = uuid4()
+
+    async def fake_backtest(
+        self: AnalyticsService,
+        _farm_id: object,
+        n_folds: int,
+    ) -> BacktestResponse:
+        assert n_folds == 6
+        return BacktestResponse(
+            farm_id=farm_id,
+            generated_at=datetime.now(UTC),
+            n_folds=n_folds,
+            status="ok",
+            per_fold_metrics=[{"fold": 1, "metrics": {"ensemble": {"mae": 0.2}}}],
+            aggregate_metrics={"ensemble": {"mae": 0.18}},
+            weights={"fao_single": 0.3, "exp_smoothing": 0.4, "quantile_regression": 0.3},
+            hyperparameters={"exp_alpha": 0.3, "exp_beta": 0.1, "quantile_lambda": 0.001},
+            temporal_split={
+                "train": {"start": 1, "end": 72},
+                "validation": {"start": 73, "end": 88},
+                "test": {"start": 89, "end": 96},
+            },
+            oracle_provenance={
+                "type": "synthetic_dgp",
+                "source_layer": "yield_oracle",
+            },
+        )
+
+    monkeypatch.setattr(AnalyticsService, "run_yield_backtest", fake_backtest)
+
+    response = await client.post(f"/api/v1/analytics/{farm_id}/yield/backtest?n_folds=6")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["farm_id"] == str(farm_id)
+    assert body["n_folds"] == 6
+    assert body["status"] == "ok"
+    assert body["hyperparameters"]["exp_alpha"] == 0.3
+    assert body["temporal_split"]["train"]["start"] == 1
+    assert body["oracle_provenance"]["type"] == "synthetic_dgp"
+
+
+@pytest.mark.asyncio
+async def test_yield_backtest_async_enqueue_and_status(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    farm_id = uuid4()
+    job_id = uuid4()
+    created_at = datetime.now(UTC)
+    updated_at = datetime.now(UTC)
+
+    async def fake_create(
+        self: AnalyticsService,
+        _farm_id: object,
+        n_folds: int,
+        min_history: int,
+    ) -> BacktestJobCreateResponse:
+        assert n_folds == 5
+        assert min_history == 24
+        return BacktestJobCreateResponse(
+            job_id=job_id,
+            farm_id=farm_id,
+            status="queued",
+            created_at=created_at,
+        )
+
+    async def fake_status(self: AnalyticsService, _job_id: object) -> BacktestJobStatusResponse:
+        return BacktestJobStatusResponse(
+            job_id=job_id,
+            farm_id=farm_id,
+            status="succeeded",
+            created_at=created_at,
+            updated_at=updated_at,
+            completed_at=updated_at,
+            error=None,
+            result={"n_folds": 5, "status": "ok"},
+        )
+
+    monkeypatch.setattr(AnalyticsService, "create_yield_backtest_job", fake_create)
+    monkeypatch.setattr(AnalyticsService, "get_yield_backtest_job_status", fake_status)
+
+    enqueue = await client.post(
+        f"/api/v1/analytics/{farm_id}/yield/backtest/async?n_folds=5&min_history=24"
+    )
+    assert enqueue.status_code == 202
+    assert enqueue.json()["job_id"] == str(job_id)
+
+    status_resp = await client.get(f"/api/v1/analytics/{farm_id}/yield/backtest/jobs/{job_id}")
+    assert status_resp.status_code == 200
+    assert status_resp.json()["status"] == "succeeded"

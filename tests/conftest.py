@@ -102,6 +102,58 @@ def bridge_stub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(julia_bridge, "build_graph", lambda _config: graph_state)
     monkeypatch.setattr(julia_bridge, "query_farm_status", lambda _farm_id, _zone: {"status": "ok"})
+    monkeypatch.setattr(
+        julia_bridge,
+        "yield_forecast_ensemble",
+        lambda _farm_id, include_members=False: [
+            {
+                "crop_bed_id": "bed-1",
+                "yield_estimate_kg_m2": 4.0,
+                "yield_lower": 3.5,
+                "yield_upper": 4.6,
+                "confidence": 0.9,
+                "model_layer": "ensemble",
+                "stress_factors": {},
+                "ensemble_weights": {
+                    "fao_single": 1.0 / 3.0,
+                    "exp_smoothing": 1.0 / 3.0,
+                    "quantile_regression": 1.0 / 3.0,
+                },
+                "ensemble_members": []
+                if not include_members
+                else [
+                    {
+                        "model_name": "fao_single",
+                        "yield_estimate": 4.0,
+                        "lower": 3.5,
+                        "upper": 4.6,
+                        "weight": 1.0 / 3.0,
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        julia_bridge,
+        "backtest_yield",
+        lambda _farm_id, n_folds=5, min_history=24: {
+            "farm_id": _farm_id,
+            "n_folds": n_folds,
+            "status": "ok",
+            "per_fold_metrics": [],
+            "aggregate_metrics": {},
+            "weights": {
+                "fao_single": 1.0 / 3.0,
+                "exp_smoothing": 1.0 / 3.0,
+                "quantile_regression": 1.0 / 3.0,
+            },
+            "hyperparameters": {
+                "exp_alpha": 0.3,
+                "exp_beta": 0.1,
+                "quantile_lambda": 0.001,
+            },
+        },
+    )
     return graph_state
 
 

@@ -45,6 +45,45 @@ class TrainYieldResidualResponse(TypedDict, total=False):
     n_coefficients: int
 
 
+class EnsembleMember(TypedDict, total=False):
+    """One member forecast within an ensemble prediction."""
+
+    model_name: str
+    yield_estimate: float
+    lower: float
+    upper: float
+    weight: float
+
+
+class EnsembleYieldForecastItem(TypedDict, total=False):
+    """Per-bed ensemble yield forecast item."""
+
+    crop_bed_id: str
+    yield_estimate_kg_m2: float
+    yield_lower: float
+    yield_upper: float
+    confidence: float
+    model_layer: str
+    stress_factors: dict[str, Any]
+    ensemble_weights: dict[str, float]
+    hyperparameters: dict[str, float]
+    ensemble_members: list[EnsembleMember]
+
+
+class BacktestResult(TypedDict, total=False):
+    """Backtesting summary for ensemble model calibration."""
+
+    farm_id: str
+    n_folds: int
+    per_fold_metrics: list[dict[str, Any]]
+    aggregate_metrics: dict[str, Any]
+    weights: dict[str, float]
+    hyperparameters: dict[str, float]
+    temporal_split: dict[str, dict[str, int]]
+    oracle_provenance: dict[str, Any]
+    status: str
+
+
 class SyntheticGenerationResponse(TypedDict, total=False):
     """Synthetic-data generator top-level output."""
 

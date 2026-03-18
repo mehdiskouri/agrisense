@@ -205,6 +205,8 @@ function evict_graph!(farm_id::String)::Bool
     delete!(GRAPH_CACHE, farm_id)
     delete!(GRAPH_VERSION, farm_id)
     evict_residual!(farm_id)
+    evict_ensemble_weights!(farm_id)
+    evict_ensemble_hyperparams!(farm_id)
     return had
 end
 
@@ -217,6 +219,8 @@ function clear_cache!()
     empty!(GRAPH_CACHE)
     empty!(GRAPH_VERSION)
     clear_residual_cache!()
+    clear_ensemble_weights!()
+    clear_ensemble_hyperparams!()
     return nothing
 end
 

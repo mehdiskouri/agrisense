@@ -56,6 +56,7 @@ include("models/irrigation.jl")
 include("models/nutrients.jl")
 include("models/yield.jl")
 include("models/anomaly.jl")
+include("models/backtesting.jl")
 include("synthetic/correlations.jl")
 include("synthetic/soil.jl")
 include("synthetic/weather.jl")
@@ -88,12 +89,20 @@ export generate_synthetic
 export serialize_graph, deserialize_graph
 export update_features, batch_update_features, train_yield_residual
 export get_graph_by_id, ensure_graph
+export yield_forecast_ensemble, backtest_yield
 
 # Model internals (for testing / advanced use)
 export compute_irrigation_schedule, compute_nutrient_report
 export compute_yield_forecast, compute_anomaly_detection
+export compute_yield_forecast_single, compute_ensemble_yield_forecast
+export compute_exp_smoothing_forecast, compute_quantile_regression_forecast
+export backtest_yield_ensemble, optimize_ensemble_hyperparams!, seasonal_decompose
 export compute_stress_coefficients, fit_residual_model, train_yield_residual!
 export RESIDUAL_COEFF_CACHE, RESIDUAL_STD_CACHE
+export ENSEMBLE_WEIGHT_CACHE, get_ensemble_weights, set_ensemble_weights!
+export evict_ensemble_weights!, clear_ensemble_weights!
+export ENSEMBLE_HYPERPARAM_CACHE, get_ensemble_hyperparams, set_ensemble_hyperparams!
+export evict_ensemble_hyperparams!, clear_ensemble_hyperparams!
 export get_residual_coefficients, get_residual_std, evict_residual!, clear_residual_cache!
 export hargreaves_et0, growth_progress_to_kc
 export DEFAULT_WILTING_POINT, DEFAULT_FIELD_CAPACITY, DEFAULT_VALVE_CAPACITY
@@ -113,6 +122,7 @@ export rolling_stats_kernel!, western_electric_kernel!
 export water_balance_kernel!, threshold_trigger_kernel!, hargreaves_et0_kernel!
 export push_features_kernel!
 export npk_deficit_severity_kernel!, vision_boost_kernel!
+export quantile_weight_kernel!
 
 # Anomaly helpers
 export anomaly_type_from_layer

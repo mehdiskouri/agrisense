@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_role
-from app.database import get_db
+from app.database import async_session_factory, get_db
 from app.models.enums import UserRoleEnum
 from app.schemas.analytics import (
     AlertsResponse,
+    BacktestJobCreateResponse,
+    BacktestJobStatusResponse,
+    BacktestResponse,
+    EnsembleYieldForecastResponse,
     FarmStatusResponse,
     IrrigationScheduleResponse,
     NutrientReportResponse,
@@ -22,6 +26,16 @@ from app.schemas.analytics import (
 from app.services.analytics_service import AnalyticsService
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+async def _run_yield_backtest_job(job_id: uuid.UUID, redis_client: object | None) -> None:
+    async with async_session_factory() as session:
+        service = AnalyticsService(session, redis_client)  # type: ignore[arg-type]
+        try:
+            await service.execute_yield_backtest_job(job_id)
+            await session.commit()
+        except Exception:
+            await session.rollback()
 
 
 def _map_error(exc: Exception) -> HTTPException:
@@ -164,6 +178,94 @@ async def get_yield_forecast(
         return await service.get_yield_forecast(farm_id)
     except Exception as exc:
         raise _map_error(exc) from exc
+
+
+@router.get("/{farm_id}/yield/forecast/ensemble", response_model=EnsembleYieldForecastResponse)
+async def get_ensemble_yield_forecast(
+    farm_id: uuid.UUID,
+    request: Request,
+    include_members: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(
+        require_role(
+            UserRoleEnum.admin,
+            UserRoleEnum.agronomist,
+            UserRoleEnum.field_operator,
+            UserRoleEnum.readonly,
+        )
+    ),
+) -> EnsembleYieldForecastResponse:
+    service = AnalyticsService(db, getattr(request.app.state, "redis", None))
+    try:
+        return await service.get_ensemble_yield_forecast(farm_id, include_members=include_members)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+@router.post("/{farm_id}/yield/backtest", response_model=BacktestResponse)
+async def run_yield_backtest(
+    farm_id: uuid.UUID,
+    request: Request,
+    n_folds: int = Query(default=5, ge=2, le=20),
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
+) -> BacktestResponse:
+    service = AnalyticsService(db, getattr(request.app.state, "redis", None))
+    try:
+        return await service.run_yield_backtest(farm_id, n_folds=n_folds)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+@router.post(
+    "/{farm_id}/yield/backtest/async",
+    response_model=BacktestJobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def enqueue_yield_backtest(
+    farm_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    n_folds: int = Query(default=5, ge=2, le=20),
+    min_history: int = Query(default=24, ge=8, le=192),
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
+) -> BacktestJobCreateResponse:
+    redis_client = getattr(request.app.state, "redis", None)
+    service = AnalyticsService(db, redis_client)
+    try:
+        response = await service.create_yield_backtest_job(
+            farm_id,
+            n_folds=n_folds,
+            min_history=min_history,
+        )
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+    background_tasks.add_task(_run_yield_backtest_job, response.job_id, redis_client)
+    return response
+
+
+@router.get("/{farm_id}/yield/backtest/jobs/{job_id}", response_model=BacktestJobStatusResponse)
+async def get_yield_backtest_job_status(
+    farm_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(require_role(UserRoleEnum.admin, UserRoleEnum.agronomist)),
+) -> BacktestJobStatusResponse:
+    service = AnalyticsService(db, getattr(request.app.state, "redis", None))
+    try:
+        status_payload = await service.get_yield_backtest_job_status(job_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+    if status_payload.farm_id != farm_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="job does not belong to farm",
+        )
+    return status_payload
 
 
 @router.get("/{farm_id}/alerts", response_model=AlertsResponse)
