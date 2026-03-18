@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy import select, text
 
-from app.config import get_settings
+from app.config import get_settings, parse_cors_origins
 from app.database import async_session_factory, engine
 from app.middleware.logging import (
     RequestLoggingMiddleware,
@@ -121,10 +121,14 @@ app = FastAPI(
 )
 
 # ── CORS ────────────────────────────────────────────────────────────────────
+settings = get_settings()
+cors_origins = parse_cors_origins(settings.cors_allowed_origins)
+allow_credentials = settings.cors_allow_credentials and cors_origins != ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -2357,6 +2357,7 @@ class TestResponseContracts:
             "sources",
             "conversation_id",
             "tools_called",
+            "telemetry",
         }
         assert set(body.keys()) == expected_keys
         assert isinstance(body["confidence"], float)
