@@ -42,3 +42,20 @@ class AskResponse(BaseModel):
     sources: list[AskSource] = Field(default_factory=list)
     conversation_id: str
     tools_called: list[str] = Field(default_factory=list)
+    telemetry: AskTelemetry | None = None
+
+
+class AskTelemetry(BaseModel):
+    model: str
+    latency_ms: float = Field(ge=0.0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    estimated_cost_usd: float = Field(ge=0.0)
+    fallback_used: bool = False
+
+
+class AskStreamEvent(BaseModel):
+    type: str
+    conversation_id: str
+    data: dict[str, Any] = Field(default_factory=dict)

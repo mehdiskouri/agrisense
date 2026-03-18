@@ -9,6 +9,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
+from app.config import Settings
 from app.schemas.analytics import ZoneDetailQuery
 from app.services.analytics_service import AnalyticsService
 
@@ -19,7 +20,11 @@ def _json_payload(payload: Any) -> str:
     return json.dumps(data, ensure_ascii=True)
 
 
-def build_tools(farm_id: uuid.UUID, analytics: AnalyticsService) -> list[BaseTool]:
+def build_tools(
+    farm_id: uuid.UUID,
+    analytics: AnalyticsService,
+    settings: Settings,
+) -> list[BaseTool]:
     """Create tool list with farm_id bound so the model cannot change target farm."""
 
     async def _get_farm_status() -> str:
@@ -57,7 +62,7 @@ def build_tools(farm_id: uuid.UUID, analytics: AnalyticsService) -> list[BaseToo
         coro.__doc__ = description
         return tool(name, return_direct=False)(coro)
 
-    return [
+    tools: list[BaseTool] = [
         _named_tool(
             "get_farm_status",
             "Get overall farm status across all zones.",
@@ -83,14 +88,24 @@ def build_tools(farm_id: uuid.UUID, analytics: AnalyticsService) -> list[BaseToo
             "Get active alerts, anomalies, and risk indicators.",
             _get_active_alerts,
         ),
-        _named_tool(
-            "get_zone_detail",
-            "Get detailed zone status and cross-layer links for a zone_id.",
-            _get_zone_detail,
-        ),
-        _named_tool(
-            "run_yield_backtest",
-            "Run ensemble yield model backtest and return accuracy metrics.",
-            _run_yield_backtest,
-        ),
     ]
+
+    if settings.ask_enable_zone_detail_tool:
+        tools.append(
+            _named_tool(
+                "get_zone_detail",
+                "Get detailed zone status and cross-layer links for a zone_id.",
+                _get_zone_detail,
+            )
+        )
+
+    if settings.ask_enable_backtest_tool:
+        tools.append(
+            _named_tool(
+                "run_yield_backtest",
+                "Run ensemble yield model backtest and return accuracy metrics.",
+                _run_yield_backtest,
+            )
+        )
+
+    return tools

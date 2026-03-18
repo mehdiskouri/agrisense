@@ -362,6 +362,7 @@ async def test_ask_response_schema_fields(
     body = response.json()
     assert "conversation_id" in body
     assert "tools_called" in body
+    assert "telemetry" in body
 
 
 @pytest.mark.asyncio
@@ -372,10 +373,12 @@ async def test_ask_openapi_contract(client: AsyncClient) -> None:
     body = response.json()
     assert "/api/v1/ask/{farm_id}" in body["paths"]
     assert "/api/v1/ask/{farm_id}/conversation" in body["paths"]
+    assert "/api/v1/ask/{farm_id}/stream" in body["paths"]
 
     schema = body["components"]["schemas"]["AskResponse"]
     assert "conversation_id" in schema["properties"]
     assert "tools_called" in schema["properties"]
+    assert "telemetry" in schema["properties"]
 
 
 @pytest.mark.asyncio
@@ -401,3 +404,84 @@ async def test_agent_max_iterations_applied(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert captured.get("recursion_limit") == 3
+
+
+@pytest.mark.asyncio
+async def test_ask_response_has_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_langchain_path(
+        monkeypatch,
+        agent_result={
+            "messages": [
+                AIMessage(
+                    content='{"answer": "ok", "confidence": 0.7}',
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 25,
+                        "total_tokens": 125,
+                    },
+                )
+            ],
+        },
+    )
+
+    service = LLMService(db=object(), redis_client=None)  # type: ignore[arg-type]
+    response = await service.ask(
+        farm_id=uuid4(),
+        question="quick status",
+        language=AskLanguage.en,
+        user_id=uuid4(),
+    )
+
+    assert response.telemetry is not None
+    assert response.telemetry.input_tokens == 100
+    assert response.telemetry.output_tokens == 25
+    assert response.telemetry.total_tokens == 125
+    assert response.telemetry.estimated_cost_usd > 0.0
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_emits_sse_events(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    farm_id = uuid4()
+
+    async def fake_stream(
+        self: LLMService,
+        *,
+        farm_id: object,
+        question: str,
+        language: AskLanguage,
+        user_id: object,
+        conversation_id: str | None,
+    ) -> Any:
+        del farm_id, question, language, user_id
+        cid = conversation_id or "conversation:test-stream"
+        yield {
+            "type": "start",
+            "conversation_id": cid,
+            "data": {"model": "test-model"},
+        }
+        yield {
+            "type": "token",
+            "conversation_id": cid,
+            "data": {"text": "hello"},
+        }
+        yield {
+            "type": "final",
+            "conversation_id": cid,
+            "data": {"answer": "hello"},
+        }
+
+    monkeypatch.setattr(LLMService, "ask_stream", fake_stream)
+
+    response = await client.post(
+        f"/api/v1/ask/{farm_id}/stream",
+        json={"question": "hello", "language": "en", "conversation_id": "conversation:sse"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    assert "event: start" in body
+    assert "event: token" in body
+    assert "event: final" in body

@@ -48,10 +48,17 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     anthropic_base_url: str = "https://api.anthropic.com/v1/messages"
     anthropic_timeout_seconds: float = 15.0
+    langchain_max_tokens: int = 1024
     langchain_max_iterations: int = 6
     langchain_conversation_ttl_seconds: int = 3600
     langchain_max_context_messages: int = 20
     langchain_verbose: bool = False
+    anthropic_input_cost_usd_per_million: float = 3.0
+    anthropic_output_cost_usd_per_million: float = 15.0
+
+    # ── Ask-agent feature flags ─────────────────────────────────────────────
+    ask_enable_zone_detail_tool: bool = True
+    ask_enable_backtest_tool: bool = False
 
     # ── Farm defaults ───────────────────────────────────────────────────────
     farm_default_type: FarmType = FarmType.greenhouse
@@ -59,6 +66,10 @@ class Settings(BaseSettings):
     # ── Observability ───────────────────────────────────────────────────────
     log_level: str = "info"
     log_format: LogFormat = LogFormat.json
+
+    # ── CORS hardening ──────────────────────────────────────────────────────
+    cors_allowed_origins: str = "*"
+    cors_allow_credentials: bool = False
 
     # ── Julia ───────────────────────────────────────────────────────────────
     julia_project: str = "core/AgriSenseCore"
@@ -70,3 +81,9 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Singleton settings instance (cached after first call)."""
     return Settings()
+
+
+def parse_cors_origins(origins_csv: str) -> list[str]:
+    """Parse comma-separated CORS origins into normalized list."""
+    parsed = [origin.strip() for origin in origins_csv.split(",") if origin.strip()]
+    return parsed or ["*"]
