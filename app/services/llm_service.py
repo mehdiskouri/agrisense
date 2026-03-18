@@ -508,9 +508,7 @@ class LLMService:
         }
 
     def _estimate_cost_usd(self, *, input_tokens: int, output_tokens: int) -> float:
-        input_cost = (
-            input_tokens / 1_000_000
-        ) * self.settings.anthropic_input_cost_usd_per_million
+        input_cost = (input_tokens / 1_000_000) * self.settings.anthropic_input_cost_usd_per_million
         output_cost = (
             output_tokens / 1_000_000
         ) * self.settings.anthropic_output_cost_usd_per_million
@@ -528,9 +526,7 @@ class LLMService:
             model=telemetry.model if telemetry is not None else self.settings.anthropic_model,
             input_tokens=telemetry.input_tokens if telemetry is not None else 0,
             output_tokens=telemetry.output_tokens if telemetry is not None else 0,
-            estimated_cost_usd=(
-                telemetry.estimated_cost_usd if telemetry is not None else 0.0
-            ),
+            estimated_cost_usd=(telemetry.estimated_cost_usd if telemetry is not None else 0.0),
             fallback_used=telemetry.fallback_used if telemetry is not None else True,
         )
 
