@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     anthropic_base_url: str = "https://api.anthropic.com/v1/messages"
     anthropic_timeout_seconds: float = 15.0
+    langchain_max_iterations: int = 6
+    langchain_conversation_ttl_seconds: int = 3600
+    langchain_max_context_messages: int = 20
+    langchain_verbose: bool = False
 
     # ── Farm defaults ───────────────────────────────────────────────────────
     farm_default_type: FarmType = FarmType.greenhouse

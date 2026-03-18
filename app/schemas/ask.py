@@ -17,6 +17,7 @@ class AskLanguage(StrEnum):
 class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     language: AskLanguage = AskLanguage.en
+    conversation_id: str | None = Field(default=None, max_length=200)
 
 
 class AskRecommendation(BaseModel):
@@ -39,3 +40,5 @@ class AskResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     recommendations: list[AskRecommendation] = Field(default_factory=list)
     sources: list[AskSource] = Field(default_factory=list)
+    conversation_id: str
+    tools_called: list[str] = Field(default_factory=list)

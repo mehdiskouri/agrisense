@@ -1207,7 +1207,13 @@ class TestAskEndpoint:
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         async def boom(
-            self: LLMService, farm_id: object, question: str, language: object
+            self: LLMService,
+            *,
+            farm_id: object,
+            question: str,
+            language: object,
+            user_id: object,
+            conversation_id: str | None,
         ) -> object:
             raise LookupError("farm not found")
 
@@ -1223,7 +1229,13 @@ class TestAskEndpoint:
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         async def boom(
-            self: LLMService, farm_id: object, question: str, language: object
+            self: LLMService,
+            *,
+            farm_id: object,
+            question: str,
+            language: object,
+            user_id: object,
+            conversation_id: str | None,
         ) -> object:
             raise ValueError("bad question")
 
@@ -1239,7 +1251,13 @@ class TestAskEndpoint:
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         async def boom(
-            self: LLMService, farm_id: object, question: str, language: object
+            self: LLMService,
+            *,
+            farm_id: object,
+            question: str,
+            language: object,
+            user_id: object,
+            conversation_id: str | None,
         ) -> object:
             raise RuntimeError("LLM died")
 
@@ -1259,7 +1277,13 @@ class TestAskEndpoint:
         farm_id = uuid.uuid4()
 
         async def fake(
-            self: LLMService, farm_id: object, question: str, language: object
+            self: LLMService,
+            *,
+            farm_id: object,
+            question: str,
+            language: object,
+            user_id: object,
+            conversation_id: str | None,
         ) -> AskResponse:
             return AskResponse(
                 farm_id=str(farm_id),
@@ -1268,6 +1292,8 @@ class TestAskEndpoint:
                 intent="status",
                 answer="OK",
                 confidence=0.5,
+                conversation_id=conversation_id or "conversation:test",
+                tools_called=[],
             )
 
         monkeypatch.setattr(LLMService, "ask", fake)
@@ -1285,7 +1311,13 @@ class TestAskEndpoint:
         farm_id = uuid.uuid4()
 
         async def fake(
-            self: LLMService, farm_id: object, question: str, language: object
+            self: LLMService,
+            *,
+            farm_id: object,
+            question: str,
+            language: object,
+            user_id: object,
+            conversation_id: str | None,
         ) -> AskResponse:
             return AskResponse(
                 farm_id=str(farm_id),
@@ -1294,6 +1326,8 @@ class TestAskEndpoint:
                 intent="status",
                 answer="OK",
                 confidence=0.5,
+                conversation_id=conversation_id or "conversation:test",
+                tools_called=[],
             )
 
         monkeypatch.setattr(LLMService, "ask", fake)
@@ -1310,7 +1344,13 @@ class TestAskEndpoint:
         farm_id = uuid.uuid4()
 
         async def fake(
-            self: LLMService, farm_id: object, question: str, language: object
+            self: LLMService,
+            *,
+            farm_id: object,
+            question: str,
+            language: object,
+            user_id: object,
+            conversation_id: str | None,
         ) -> AskResponse:
             return AskResponse(
                 farm_id=str(farm_id),
@@ -1319,6 +1359,8 @@ class TestAskEndpoint:
                 intent="status",
                 answer="OK",
                 confidence=0.5,
+                conversation_id=conversation_id or "conversation:test",
+                tools_called=[],
             )
 
         monkeypatch.setattr(LLMService, "ask", fake)
@@ -2276,7 +2318,13 @@ class TestResponseContracts:
         farm_id = uuid.uuid4()
 
         async def fake(
-            self: LLMService, farm_id: object, question: str, language: object
+            self: LLMService,
+            *,
+            farm_id: object,
+            question: str,
+            language: object,
+            user_id: object,
+            conversation_id: str | None,
         ) -> AskResponse:
             return AskResponse(
                 farm_id=str(farm_id),
@@ -2287,6 +2335,8 @@ class TestResponseContracts:
                 confidence=0.9,
                 recommendations=[],
                 sources=[],
+                conversation_id=conversation_id or "conversation:test",
+                tools_called=[],
             )
 
         monkeypatch.setattr(LLMService, "ask", fake)
@@ -2305,6 +2355,8 @@ class TestResponseContracts:
             "confidence",
             "recommendations",
             "sources",
+            "conversation_id",
+            "tools_called",
         }
         assert set(body.keys()) == expected_keys
         assert isinstance(body["confidence"], float)
