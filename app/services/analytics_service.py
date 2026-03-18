@@ -17,7 +17,11 @@ from app.models.farm import Vertex
 from app.schemas.analytics import (
     AlertItem,
     AlertsResponse,
+    BacktestJobCreateResponse,
+    BacktestJobStatusResponse,
+    BacktestResponse,
     CrossLayerLink,
+    EnsembleYieldForecastResponse,
     FarmStatusResponse,
     IrrigationScheduleResponse,
     NutrientReportResponse,
@@ -32,9 +36,15 @@ from app.services.farm_service import FarmService
 
 
 class AnalyticsService:
+    BACKTEST_JOB_TTL_SECONDS = 60 * 60 * 24
+
     def __init__(self, db: AsyncSession, redis_client: Redis | None = None):
         self.db = db
         self.redis_client = redis_client
+
+    @staticmethod
+    def _backtest_job_key(job_id: uuid.UUID) -> str:
+        return f"analytics:yield_backtest:job:{job_id}"
 
     async def _ensure_graph(self, farm_id: uuid.UUID) -> None:
         """Ensure graph is built and cached in Julia for this farm."""
@@ -141,6 +151,194 @@ class AnalyticsService:
         await self._ensure_graph(farm_id)
         items = julia_bridge.yield_forecast(str(farm_id))
         return YieldForecastResponse(farm_id=farm_id, generated_at=datetime.now(UTC), items=items)
+
+    async def get_ensemble_yield_forecast(
+        self,
+        farm_id: uuid.UUID,
+        include_members: bool,
+    ) -> EnsembleYieldForecastResponse:
+        farm_service = FarmService(self.db)
+        await farm_service.get_farm(farm_id)
+        await self._ensure_graph(farm_id)
+        items = julia_bridge.yield_forecast_ensemble(str(farm_id), include_members=include_members)
+
+        aggregate_weights: dict[str, float] = {}
+        for item in items:
+            raw = item.get("ensemble_weights")
+            if isinstance(raw, dict):
+                aggregate_weights = {
+                    str(key): float(value)
+                    for key, value in raw.items()
+                    if isinstance(value, (int, float))
+                }
+                break
+
+        return EnsembleYieldForecastResponse(
+            farm_id=farm_id,
+            generated_at=datetime.now(UTC),
+            include_members=include_members,
+            ensemble_weights=aggregate_weights,
+            items=items,
+        )
+
+    async def run_yield_backtest(self, farm_id: uuid.UUID, n_folds: int) -> BacktestResponse:
+        farm_service = FarmService(self.db)
+        await farm_service.get_farm(farm_id)
+        await self._ensure_graph(farm_id)
+        payload = julia_bridge.backtest_yield(str(farm_id), n_folds=n_folds)
+
+        weights_raw = payload.get("weights")
+        weights: dict[str, float] = {}
+        if isinstance(weights_raw, dict):
+            weights = {
+                str(key): float(value)
+                for key, value in weights_raw.items()
+                if isinstance(value, (int, float))
+            }
+
+        folds_raw = payload.get("per_fold_metrics")
+        per_fold_metrics: list[dict[str, Any]] = []
+        if isinstance(folds_raw, list):
+            per_fold_metrics = [item for item in folds_raw if isinstance(item, dict)]
+
+        aggregate_raw = payload.get("aggregate_metrics")
+        aggregate_metrics = aggregate_raw if isinstance(aggregate_raw, dict) else {}
+
+        temporal_split_raw = payload.get("temporal_split")
+        temporal_split: dict[str, dict[str, int]] = {}
+        if isinstance(temporal_split_raw, dict):
+            for segment, window in temporal_split_raw.items():
+                if isinstance(window, dict):
+                    start = window.get("start")
+                    end = window.get("end")
+                    if isinstance(start, int) and isinstance(end, int):
+                        temporal_split[str(segment)] = {"start": start, "end": end}
+
+        oracle_raw = payload.get("oracle_provenance")
+        oracle_provenance = oracle_raw if isinstance(oracle_raw, dict) else {}
+
+        status = str(payload.get("status") or "ok")
+        n_folds_raw = payload.get("n_folds")
+        folds_value = int(n_folds_raw) if isinstance(n_folds_raw, int) else n_folds
+
+        return BacktestResponse(
+            farm_id=farm_id,
+            generated_at=datetime.now(UTC),
+            n_folds=folds_value,
+            status=status,
+            per_fold_metrics=per_fold_metrics,
+            aggregate_metrics=aggregate_metrics,
+            weights=weights,
+            hyperparameters={
+                str(k): float(v)
+                for k, v in (payload.get("hyperparameters") or {}).items()
+                if isinstance(v, (int, float))
+            }
+            if isinstance(payload.get("hyperparameters"), dict)
+            else {},
+            temporal_split=temporal_split,
+            oracle_provenance=oracle_provenance,
+        )
+
+    async def create_yield_backtest_job(
+        self,
+        farm_id: uuid.UUID,
+        n_folds: int,
+        min_history: int,
+    ) -> BacktestJobCreateResponse:
+        await FarmService(self.db).get_farm(farm_id)
+        if self.redis_client is None:
+            raise RuntimeError("redis is required for async backtest jobs")
+
+        now = datetime.now(UTC)
+        job_id = uuid.uuid4()
+        payload = {
+            "job_id": str(job_id),
+            "farm_id": str(farm_id),
+            "n_folds": int(n_folds),
+            "min_history": int(min_history),
+            "status": "queued",
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+            "completed_at": None,
+            "error": None,
+            "result": None,
+        }
+        await self.redis_client.setex(
+            self._backtest_job_key(job_id),
+            self.BACKTEST_JOB_TTL_SECONDS,
+            json.dumps(payload),
+        )
+        return BacktestJobCreateResponse(
+            job_id=job_id,
+            farm_id=farm_id,
+            status="queued",
+            created_at=now,
+        )
+
+    async def execute_yield_backtest_job(self, job_id: uuid.UUID) -> BacktestJobStatusResponse:
+        if self.redis_client is None:
+            raise RuntimeError("redis is required for async backtest jobs")
+
+        key = self._backtest_job_key(job_id)
+        raw = await self.redis_client.get(key)
+        if raw is None:
+            raise LookupError(f"Backtest job {job_id} not found")
+
+        payload = json.loads(raw)
+        farm_id = uuid.UUID(str(payload["farm_id"]))
+        n_folds = int(payload.get("n_folds", 5))
+        min_history = int(payload.get("min_history", 24))
+
+        now = datetime.now(UTC)
+        payload["status"] = "running"
+        payload["updated_at"] = now.isoformat()
+        await self.redis_client.setex(key, self.BACKTEST_JOB_TTL_SECONDS, json.dumps(payload))
+
+        try:
+            result = await self.run_yield_backtest(farm_id, n_folds=n_folds)
+            payload["status"] = "succeeded"
+            payload["result"] = result.model_dump(mode="json")
+            payload["error"] = None
+        except Exception as exc:
+            payload["status"] = "failed"
+            payload["error"] = str(exc)
+            payload["result"] = None
+
+        completed = datetime.now(UTC)
+        payload["updated_at"] = completed.isoformat()
+        payload["completed_at"] = completed.isoformat()
+        payload["min_history"] = min_history
+        await self.redis_client.setex(key, self.BACKTEST_JOB_TTL_SECONDS, json.dumps(payload))
+
+        return await self.get_yield_backtest_job_status(job_id)
+
+    async def get_yield_backtest_job_status(self, job_id: uuid.UUID) -> BacktestJobStatusResponse:
+        if self.redis_client is None:
+            raise RuntimeError("redis is required for async backtest jobs")
+
+        raw = await self.redis_client.get(self._backtest_job_key(job_id))
+        if raw is None:
+            raise LookupError(f"Backtest job {job_id} not found")
+        payload = json.loads(raw)
+
+        completed_at_raw = payload.get("completed_at")
+        completed_at = (
+            datetime.fromisoformat(completed_at_raw) if isinstance(completed_at_raw, str) else None
+        )
+        result_payload = payload.get("result")
+        result_dict = result_payload if isinstance(result_payload, dict) else None
+
+        return BacktestJobStatusResponse(
+            job_id=uuid.UUID(str(payload["job_id"])),
+            farm_id=uuid.UUID(str(payload["farm_id"])),
+            status=str(payload.get("status") or "queued"),
+            created_at=datetime.fromisoformat(str(payload["created_at"])),
+            updated_at=datetime.fromisoformat(str(payload["updated_at"])),
+            completed_at=completed_at,
+            error=str(payload["error"]) if payload.get("error") is not None else None,
+            result=result_dict,
+        )
 
     async def get_active_alerts(self, farm_id: uuid.UUID) -> AlertsResponse:
         farm_service = FarmService(self.db)

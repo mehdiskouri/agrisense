@@ -66,6 +66,66 @@ class YieldForecastResponse(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class EnsembleMember(BaseModel):
+    model_name: str
+    yield_estimate: float
+    lower: float
+    upper: float
+    weight: float
+
+
+class EnsembleYieldItem(BaseModel):
+    crop_bed_id: str
+    yield_estimate_kg_m2: float
+    yield_lower: float
+    yield_upper: float
+    confidence: float
+    stress_factors: dict[str, Any] = Field(default_factory=dict)
+    model_layer: str
+    ensemble_weights: dict[str, float] = Field(default_factory=dict)
+    hyperparameters: dict[str, float] = Field(default_factory=dict)
+    ensemble_members: list[EnsembleMember] = Field(default_factory=list)
+
+
+class EnsembleYieldForecastResponse(BaseModel):
+    farm_id: uuid.UUID
+    generated_at: datetime
+    include_members: bool
+    ensemble_weights: dict[str, float] = Field(default_factory=dict)
+    items: list[EnsembleYieldItem] = Field(default_factory=list)
+
+
+class BacktestResponse(BaseModel):
+    farm_id: uuid.UUID
+    generated_at: datetime
+    n_folds: int
+    status: str
+    per_fold_metrics: list[dict[str, Any]] = Field(default_factory=list)
+    aggregate_metrics: dict[str, Any] = Field(default_factory=dict)
+    weights: dict[str, float] = Field(default_factory=dict)
+    hyperparameters: dict[str, float] = Field(default_factory=dict)
+    temporal_split: dict[str, dict[str, int]] = Field(default_factory=dict)
+    oracle_provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class BacktestJobCreateResponse(BaseModel):
+    job_id: uuid.UUID
+    farm_id: uuid.UUID
+    status: str
+    created_at: datetime
+
+
+class BacktestJobStatusResponse(BaseModel):
+    job_id: uuid.UUID
+    farm_id: uuid.UUID
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    error: str | None = None
+    result: dict[str, Any] | None = None
+
+
 class AlertItem(BaseModel):
     source: str
     severity: str = "info"

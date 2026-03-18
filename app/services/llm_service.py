@@ -68,10 +68,14 @@ class LLMService:
                 "generated_at": report.generated_at.isoformat(),
             }
         if intent == "yield":
-            forecast = await analytics.get_yield_forecast(farm_id)
+            forecast = await analytics.get_ensemble_yield_forecast(
+                farm_id,
+                include_members=True,
+            )
             return {
                 "intent": intent,
                 "yield": forecast.items,
+                "ensemble_weights": forecast.ensemble_weights,
                 "generated_at": forecast.generated_at.isoformat(),
             }
         if intent == "alerts":
