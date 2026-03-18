@@ -288,10 +288,11 @@ function fit_residual_model(X::AbstractMatrix{Float32}, y_residual::AbstractVect
 end
 
 """
-    train_yield_residual!(graph, actual_yields) -> nothing
+    train_yield_residual!(graph, actual_yields) -> Bool
 
 Fit the residual model using actual yield data and store coefficients.
 `actual_yields` is a `Dict{String,Float32}` mapping vertex_id → observed yield.
+Returns `true` when coefficients are fitted, `false` when data is insufficient.
 """
 function train_yield_residual!(graph::LayeredHyperGraph,
                                 actual_yields::Dict{String,Float32})
@@ -334,11 +335,10 @@ function train_yield_residual!(graph::LayeredHyperGraph,
     farm_id = graph.farm_id
 
     if length(obs_indices) < n_features + 1
-        @warn "Not enough observations ($(length(obs_indices))) for ridge regression — " *
-              "need at least $(n_features + 1). Coefficients not updated."
+        # Insufficient labels is a normal condition for new farms; keep residual model disabled.
         delete!(RESIDUAL_COEFF_CACHE, farm_id)
         delete!(RESIDUAL_STD_CACHE, farm_id)
-        return nothing
+        return false
     end
 
     X_obs = X[obs_indices, :]
@@ -353,7 +353,7 @@ function train_yield_residual!(graph::LayeredHyperGraph,
 
     RESIDUAL_COEFF_CACHE[farm_id] = β
     RESIDUAL_STD_CACHE[farm_id] = isfinite(sigma) ? max(sigma, 1.0f-4) : 1.0f-4
-    return nothing
+    return true
 end
 
 """
@@ -448,6 +448,623 @@ function compute_yield_forecast(graph::LayeredHyperGraph)::Vector{Dict{String,An
             ),
             "model_layer" => model_layer,
         ))
+    end
+
+    return results
+end
+
+"""
+    compute_yield_forecast_single(graph) -> Vector{Dict}
+
+Explicit alias for the existing single-model forecast path.
+"""
+function compute_yield_forecast_single(graph::LayeredHyperGraph)::Vector{Dict{String,Any}}
+    return compute_yield_forecast(graph)
+end
+
+# ---------------------------------------------------------------------------
+# Ensemble yield forecasting helpers
+# ---------------------------------------------------------------------------
+
+"""Per-farm ensemble blending weights keyed by `farm_id`."""
+const ENSEMBLE_WEIGHT_CACHE = Dict{String, Vector{Float32}}()
+
+"""Per-farm tuned hyperparameters keyed by `farm_id`."""
+const ENSEMBLE_HYPERPARAM_CACHE = Dict{String, Dict{String,Float32}}()
+
+function _normalise_weights(weights::Vector{Float32})::Vector{Float32}
+    isempty(weights) && return Float32[1 / 3, 1 / 3, 1 / 3]
+    nonneg = Float32[max(w, 0.0f0) for w in weights]
+    total = sum(nonneg)
+    if total <= 0.0f0
+        return Float32[1 / 3, 1 / 3, 1 / 3]
+    end
+    return Float32[w / total for w in nonneg]
+end
+
+function get_ensemble_weights(farm_id::String)::Vector{Float32}
+    weights = get(ENSEMBLE_WEIGHT_CACHE, farm_id, Float32[1 / 3, 1 / 3, 1 / 3])
+    if length(weights) != 3
+        return Float32[1 / 3, 1 / 3, 1 / 3]
+    end
+    return _normalise_weights(weights)
+end
+
+function set_ensemble_weights!(farm_id::String, weights::Vector{Float32})::Vector{Float32}
+    normalised = _normalise_weights(weights)
+    ENSEMBLE_WEIGHT_CACHE[farm_id] = normalised
+    return normalised
+end
+
+function evict_ensemble_weights!(farm_id::String)::Bool
+    had = haskey(ENSEMBLE_WEIGHT_CACHE, farm_id)
+    delete!(ENSEMBLE_WEIGHT_CACHE, farm_id)
+    return had
+end
+
+function clear_ensemble_weights!()::Nothing
+    empty!(ENSEMBLE_WEIGHT_CACHE)
+    return nothing
+end
+
+function get_ensemble_hyperparams(farm_id::String)::Dict{String,Float32}
+    defaults = Dict{String,Float32}(
+        "exp_alpha" => 0.30f0,
+        "exp_beta" => 0.10f0,
+        "quantile_lambda" => 1.0f-3,
+    )
+    existing = get(ENSEMBLE_HYPERPARAM_CACHE, farm_id, defaults)
+    merged = copy(defaults)
+    for (k, v) in existing
+        merged[k] = v
+    end
+    return merged
+end
+
+function set_ensemble_hyperparams!(
+    farm_id::String,
+    params::Dict{String,Float32},
+)::Dict{String,Float32}
+    merged = get_ensemble_hyperparams(farm_id)
+    for (k, v) in params
+        merged[k] = v
+    end
+    ENSEMBLE_HYPERPARAM_CACHE[farm_id] = merged
+    return merged
+end
+
+function evict_ensemble_hyperparams!(farm_id::String)::Bool
+    had = haskey(ENSEMBLE_HYPERPARAM_CACHE, farm_id)
+    delete!(ENSEMBLE_HYPERPARAM_CACHE, farm_id)
+    return had
+end
+
+function clear_ensemble_hyperparams!()::Nothing
+    empty!(ENSEMBLE_HYPERPARAM_CACHE)
+    return nothing
+end
+
+"""
+    seasonal_decompose(history, period) -> (trend, seasonal, residual)
+
+Simple additive decomposition using centered moving-average trend and a
+phase-aligned seasonal component, with NaN-aware averaging.
+"""
+function seasonal_decompose(
+    history::Vector{Float32},
+    period::Int,
+)::Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}
+    n = length(history)
+    n == 0 && return Float32[], Float32[], Float32[]
+
+    use_period = clamp(period, 2, max(2, n))
+    half_window = max(1, fld(use_period, 2))
+
+    trend = Vector{Float32}(undef, n)
+    for i in 1:n
+        lo = max(1, i - half_window)
+        hi = min(n, i + half_window)
+        vals = Float32[]
+        for v in @view history[lo:hi]
+            if !isnan(v)
+                push!(vals, v)
+            end
+        end
+        trend[i] = isempty(vals) ? NaN32 : Float32(mean(vals))
+    end
+
+    seasonal_pattern = zeros(Float32, use_period)
+    seasonal_counts = zeros(Int, use_period)
+    for i in 1:n
+        h = history[i]
+        t = trend[i]
+        if isnan(h) || isnan(t)
+            continue
+        end
+        slot = mod1(i, use_period)
+        seasonal_pattern[slot] += (h - t)
+        seasonal_counts[slot] += 1
+    end
+    for i in 1:use_period
+        if seasonal_counts[i] > 0
+            seasonal_pattern[i] /= seasonal_counts[i]
+        end
+    end
+
+    seasonal = Vector{Float32}(undef, n)
+    residual = Vector{Float32}(undef, n)
+    for i in 1:n
+        seasonal[i] = seasonal_pattern[mod1(i, use_period)]
+        h = history[i]
+        t = trend[i]
+        residual[i] = (isnan(h) || isnan(t)) ? NaN32 : (h - t - seasonal[i])
+    end
+
+    return trend, seasonal, residual
+end
+
+function _holt_linear_forecast(
+    series::Vector{Float32};
+    α::Float32=0.3f0,
+    β::Float32=0.1f0,
+)::Tuple{Float32, Float32}
+    valid = Float32[v for v in series if !isnan(v)]
+    if isempty(valid)
+        return 0.0f0, 0.0f0
+    end
+    if length(valid) == 1
+        return valid[1], max(abs(valid[1]) * 0.05f0, 1.0f-4)
+    end
+
+    level = valid[1]
+    trend = valid[2] - valid[1]
+    residuals = Float32[]
+
+    for i in 2:length(valid)
+        y = valid[i]
+        pred = level + trend
+        push!(residuals, y - pred)
+        new_level = α * y + (1.0f0 - α) * (level + trend)
+        new_trend = β * (new_level - level) + (1.0f0 - β) * trend
+        level = new_level
+        trend = new_trend
+    end
+
+    sigma = isempty(residuals) ? 0.0f0 : Float32(std(residuals; corrected=false))
+    sigma = isfinite(sigma) ? max(sigma, 1.0f-4) : 1.0f-4
+    return level + trend, sigma
+end
+
+function _aggregate_by_crop_bed(
+    graph::LayeredHyperGraph,
+    values::Vector{Float32},
+)::Tuple{Vector{String}, Vector{Float32}}
+    crop_layer = graph.layers[:crop_requirements]
+    B_cpu = ensure_cpu(crop_layer.incidence)
+    ne = size(B_cpu, 2)
+    bed_ids = String[]
+    bed_values = Float32[]
+    for e in 1:ne
+        members = findall(!iszero, @view B_cpu[:, e])
+        isempty(members) && continue
+        bed_id = e <= length(crop_layer.edge_ids) ? crop_layer.edge_ids[e] : "bed_$e"
+        push!(bed_ids, bed_id)
+        push!(bed_values, Float32(mean(values[members])))
+    end
+    return bed_ids, bed_values
+end
+
+function _weighted_quantile(
+    values::Vector{Float32},
+    weights::Vector{Float32},
+    q::Float32,
+)::Float32
+    n = min(length(values), length(weights))
+    n == 0 && return 0.0f0
+
+    pairs = Tuple{Float32,Float32}[]
+    for i in 1:n
+        v = values[i]
+        w = weights[i]
+        if isfinite(v) && isfinite(w) && w > 0.0f0
+            push!(pairs, (v, w))
+        end
+    end
+    isempty(pairs) && return 0.0f0
+
+    sort!(pairs; by=first)
+    total_w = sum(last, pairs)
+    total_w <= 0.0f0 && return first(pairs)[1]
+
+    target = clamp(q, 0.0f0, 1.0f0) * total_w
+    running = 0.0f0
+    for (v, w) in pairs
+        running += w
+        if running >= target
+            return v
+        end
+    end
+    return pairs[end][1]
+end
+
+function _weighted_quantile_ci(
+    member_lowers::Vector{Float32},
+    member_medians::Vector{Float32},
+    member_uppers::Vector{Float32},
+    member_weights::Vector{Float32},
+)::Tuple{Float32, Float32, Float32}
+    n = min(
+        length(member_lowers),
+        length(member_medians),
+        length(member_uppers),
+        length(member_weights),
+    )
+    n == 0 && return 0.0f0, 0.0f0, 0.0f0
+
+    # Approximate each member predictive distribution with (q10, q50, q90)
+    # support points and aggregate via weighted quantiles of the mixture.
+    support_values = Float32[]
+    support_weights = Float32[]
+    anchor_mass = Float32[0.20f0, 0.60f0, 0.20f0]
+
+    for i in 1:n
+        mw = max(member_weights[i], 0.0f0)
+        mw <= 0.0f0 && continue
+        lo = max(0.0f0, member_lowers[i])
+        mid = max(lo, member_medians[i])
+        hi = max(mid, member_uppers[i])
+        append!(support_values, Float32[lo, mid, hi])
+        append!(support_weights, Float32[
+            mw * anchor_mass[1],
+            mw * anchor_mass[2],
+            mw * anchor_mass[3],
+        ])
+    end
+
+    if isempty(support_values)
+        return 0.0f0, 0.0f0, 0.0f0
+    end
+
+    q10 = _weighted_quantile(support_values, support_weights, 0.10f0)
+    q50 = _weighted_quantile(support_values, support_weights, 0.50f0)
+    q90 = _weighted_quantile(support_values, support_weights, 0.90f0)
+    lo = max(0.0f0, min(q10, q50, q90))
+    mid = max(lo, q50)
+    hi = max(mid, q90)
+    return mid, lo, hi
+end
+
+function _yield_feature_matrix(graph::LayeredHyperGraph)::Matrix{Float32}
+    nv = graph.n_vertices
+    feature_layers = Symbol[]
+    for lsym in [:soil, :lighting, :crop_requirements, :vision]
+        haskey(graph.layers, lsym) && push!(feature_layers, lsym)
+    end
+
+    X_raw = isempty(feature_layers) ? zeros(Float32, nv, 0) :
+            Float32.(ensure_cpu(multi_layer_features(graph, feature_layers)))
+    X_derived = Float32.(ensure_cpu(compute_derived_features(graph)))
+
+    X = if size(X_derived, 2) > 0
+        hcat(X_raw, X_derived)
+    else
+        X_raw
+    end
+    if size(X, 2) == 0
+        return ones(Float32, nv, 1)
+    end
+    return X
+end
+
+function _compute_fao_vertex_prediction(graph::LayeredHyperGraph)::Vector{Float32}
+    nv = graph.n_vertices
+    ks, kn, kl, kw = compute_stress_coefficients(graph)
+    y_pot = if haskey(graph.layers, :crop_requirements)
+        graph.layers[:crop_requirements].vertex_features[:, 1]
+    else
+        first_layer = first(values(graph.layers))
+        backend = array_backend(first_layer.vertex_features)
+        backend isa CPU ? ones(Float32, nv) :
+            (HAS_CUDA ? CUDA.ones(Float32, nv) : ones(Float32, nv))
+    end
+    y_fao = @. y_pot * ks * kn * kl * kw
+    return Float32.(ensure_cpu(y_fao))
+end
+
+@kernel function quantile_weight_kernel!(weights, residuals, q)
+    i = @index(Global)
+    @inbounds begin
+        r = residuals[i]
+        weights[i] = r >= 0.0f0 ? q : (1.0f0 - q)
+    end
+end
+
+function _quantile_regression_irls(
+    X::Matrix{Float32},
+    y::Vector{Float32},
+    q::Float32;
+    λ::Float32=1.0f-3,
+    iterations::Int=10,
+)::Vector{Float32}
+    n, p = size(X)
+    yv = copy(y)
+    Xv = hcat(ones(Float32, n), X)
+    β = zeros(Float32, p + 1)
+
+    if HAS_CUDA
+        Xg = CuArray(Xv)
+        yg = CuArray(yv)
+        βg = CuArray(β)
+        backend = CUDABackend()
+        nrows = size(Xg, 1)
+        for _ in 1:iterations
+            predg = Xg * βg
+            rg = yg .- predg
+            wg = similar(rg)
+            launch_kernel!(quantile_weight_kernel!, backend, nrows, wg, rg, q)
+            Wg = Diagonal(wg)
+            Iregg = CuArray(Matrix{Float32}(I, p + 1, p + 1))
+            lhsg = Xg' * Wg * Xg + λ * Iregg
+            rhsg = Xg' * Wg * yg
+            try
+                βg = lhsg \ rhsg
+            catch err
+                if err isa LinearAlgebra.SingularException
+                    lhs_cpu = ensure_cpu(lhsg)
+                    rhs_cpu = ensure_cpu(rhsg)
+                    β_cpu = pinv(lhs_cpu) * rhs_cpu
+                    βg = CuArray(Float32.(β_cpu))
+                else
+                    rethrow(err)
+                end
+            end
+        end
+        return Float32.(ensure_cpu(βg))
+    end
+
+    for _ in 1:iterations
+        pred = Xv * β
+        r = yv .- pred
+        w = similar(r)
+        @inbounds for i in eachindex(r)
+            w[i] = r[i] >= 0.0f0 ? q : (1.0f0 - q)
+        end
+        W = Diagonal(w)
+        Ireg = Matrix{Float32}(I, p + 1, p + 1)
+        lhs = Xv' * W * Xv + λ * Ireg
+        rhs = Xv' * W * yv
+        try
+            β = lhs \ rhs
+        catch err
+            if err isa LinearAlgebra.SingularException
+                β = pinv(lhs) * rhs
+            else
+                rethrow(err)
+            end
+        end
+    end
+    return β
+end
+
+"""
+    compute_exp_smoothing_forecast(graph) -> (y_pred, y_lower, y_upper)
+
+Compute per-vertex forecast from soil-moisture history using additive seasonal
+decomposition + Holt linear smoothing on deseasonalized values.
+"""
+function compute_exp_smoothing_forecast(
+    graph::LayeredHyperGraph,
+    ;
+    alpha::Float32=0.30f0,
+    beta::Float32=0.10f0,
+)::Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}
+    nv = graph.n_vertices
+    y_pred = zeros(Float32, nv)
+    y_lower = zeros(Float32, nv)
+    y_upper = zeros(Float32, nv)
+
+    has_soil = haskey(graph.layers, :soil)
+    y_pot = haskey(graph.layers, :crop_requirements) ?
+            Float32.(ensure_cpu(graph.layers[:crop_requirements].vertex_features[:, 1])) :
+            ones(Float32, nv)
+
+    for v in 1:nv
+        moisture_series = Float32[]
+        if has_soil
+            hist, mask = get_history(graph.layers[:soil], v; return_mask=true)
+            if size(hist, 2) > 0
+                for t in 1:size(hist, 2)
+                    if mask[1, t]
+                        push!(moisture_series, Float32(hist[1, t]))
+                    end
+                end
+            end
+        end
+        if isempty(moisture_series)
+            if has_soil
+                push!(moisture_series, Float32(graph.layers[:soil].vertex_features[v, 1]))
+            else
+                push!(moisture_series, 0.25f0)
+            end
+        end
+
+        use_period = min(96, max(2, length(moisture_series)))
+        _, seasonal, residual = seasonal_decompose(moisture_series, use_period)
+        deseason = similar(moisture_series)
+        for i in eachindex(moisture_series)
+            m = moisture_series[i]
+            s = seasonal[i]
+            deseason[i] = (isnan(m) || isnan(s)) ? m : (m - s)
+        end
+
+        forecast_moisture, sigma = _holt_linear_forecast(deseason; α=alpha, β=beta)
+        moisture_health = clamp(
+            (forecast_moisture - DEFAULT_WILTING_POINT) /
+            (DEFAULT_FIELD_CAPACITY - DEFAULT_WILTING_POINT),
+            0.0f0,
+            1.0f0,
+        )
+
+        pred = y_pot[v] * moisture_health
+        residual_sigma = Float32(std(Float32[r for r in residual if !isnan(r)]; corrected=false))
+        residual_sigma = isfinite(residual_sigma) ? residual_sigma : 0.0f0
+        half = max(0.10f0 * abs(pred), 1.96f0 * (sigma + residual_sigma) * abs(y_pot[v]))
+
+        y_pred[v] = pred
+        y_lower[v] = max(0.0f0, pred - half)
+        y_upper[v] = pred + half
+    end
+
+    return y_pred, y_lower, y_upper
+end
+
+"""
+    compute_quantile_regression_forecast(graph; quantiles=[0.10, 0.50, 0.90])
+        -> (y_median, y_q10, y_q90)
+
+Quantile regression on the existing multi-layer feature matrix.
+"""
+function compute_quantile_regression_forecast(
+    graph::LayeredHyperGraph;
+    quantiles::Vector{Float32}=Float32[0.10f0, 0.50f0, 0.90f0],
+    lambda::Float32=1.0f-3,
+)::Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}
+    X = _yield_feature_matrix(graph)
+    y_target = _compute_fao_vertex_prediction(graph)
+
+    q10 = clamp(quantiles[1], 0.01f0, 0.49f0)
+    q50 = clamp(quantiles[2], 0.10f0, 0.90f0)
+    q90 = clamp(quantiles[3], 0.51f0, 0.99f0)
+
+    β10 = _quantile_regression_irls(X, y_target, q10; λ=lambda)
+    β50 = _quantile_regression_irls(X, y_target, q50; λ=lambda)
+    β90 = _quantile_regression_irls(X, y_target, q90; λ=lambda)
+
+    Xv = hcat(ones(Float32, size(X, 1)), X)
+    pred10 = Xv * β10
+    pred50 = Xv * β50
+    pred90 = Xv * β90
+
+    # Enforce monotonic quantiles per vertex.
+    for i in eachindex(pred50)
+        lo = min(pred10[i], pred50[i], pred90[i])
+        mid = pred50[i]
+        hi = max(pred10[i], pred50[i], pred90[i])
+        pred10[i] = max(0.0f0, lo)
+        pred50[i] = max(pred10[i], max(0.0f0, mid))
+        pred90[i] = max(pred50[i], max(0.0f0, hi))
+    end
+
+    return Float32.(pred50), Float32.(pred10), Float32.(pred90)
+end
+
+"""
+    compute_ensemble_yield_forecast(graph; include_members=false) -> Vector{Dict}
+
+Blend FAO single-model, exponential-smoothing, and quantile-regression members
+with per-farm cached weights.
+"""
+function compute_ensemble_yield_forecast(
+    graph::LayeredHyperGraph;
+    include_members::Bool=false,
+)::Vector{Dict{String,Any}}
+    haskey(graph.layers, :crop_requirements) || return Dict{String,Any}[]
+
+    farm_id = graph.farm_id
+    weights = get_ensemble_weights(farm_id)
+    hyperparams = get_ensemble_hyperparams(farm_id)
+    exp_alpha = get(hyperparams, "exp_alpha", 0.30f0)
+    exp_beta = get(hyperparams, "exp_beta", 0.10f0)
+    quantile_lambda = get(hyperparams, "quantile_lambda", 1.0f-3)
+
+    single_results = compute_yield_forecast_single(graph)
+    y_exp, y_exp_lo, y_exp_hi = compute_exp_smoothing_forecast(
+        graph;
+        alpha=exp_alpha,
+        beta=exp_beta,
+    )
+    y_q50, y_q10, y_q90 = compute_quantile_regression_forecast(
+        graph;
+        lambda=quantile_lambda,
+    )
+
+    bed_ids, exp_vals = _aggregate_by_crop_bed(graph, y_exp)
+    _, exp_lowers = _aggregate_by_crop_bed(graph, y_exp_lo)
+    _, exp_uppers = _aggregate_by_crop_bed(graph, y_exp_hi)
+    _, q50_vals = _aggregate_by_crop_bed(graph, y_q50)
+    _, q10_vals = _aggregate_by_crop_bed(graph, y_q10)
+    _, q90_vals = _aggregate_by_crop_bed(graph, y_q90)
+
+    n = min(length(single_results), length(exp_vals), length(q50_vals))
+    results = Dict{String,Any}[]
+    for i in 1:n
+        single = single_results[i]
+        fao_est = Float32(single["yield_estimate_kg_m2"])
+        fao_lo = Float32(single["yield_lower"])
+        fao_hi = Float32(single["yield_upper"])
+
+        exp_est = exp_vals[i]
+        exp_lo = exp_lowers[i]
+        exp_hi = exp_uppers[i]
+
+        qr_est = q50_vals[i]
+        qr_lo = q10_vals[i]
+        qr_hi = q90_vals[i]
+
+        ens_est, ens_lo, ens_hi = _weighted_quantile_ci(
+            Float32[fao_lo, exp_lo, qr_lo],
+            Float32[fao_est, exp_est, qr_est],
+            Float32[fao_hi, exp_hi, qr_hi],
+            weights,
+        )
+
+        item = Dict{String,Any}(
+            "crop_bed_id" => bed_ids[i],
+            "yield_estimate_kg_m2" => Float64(ens_est),
+            "yield_lower" => Float64(ens_lo),
+            "yield_upper" => Float64(ens_hi),
+            "confidence" => 0.90,
+            "stress_factors" => get(single, "stress_factors", Dict{String,Any}()),
+            "model_layer" => "ensemble",
+            "ensemble_weights" => Dict{String,Any}(
+                "fao_single" => Float64(weights[1]),
+                "exp_smoothing" => Float64(weights[2]),
+                "quantile_regression" => Float64(weights[3]),
+            ),
+            "hyperparameters" => Dict{String,Any}(
+                "exp_alpha" => Float64(exp_alpha),
+                "exp_beta" => Float64(exp_beta),
+                "quantile_lambda" => Float64(quantile_lambda),
+            ),
+        )
+
+        if include_members
+            item["ensemble_members"] = Vector{Dict{String,Any}}([
+                Dict{String,Any}(
+                    "model_name" => "fao_single",
+                    "yield_estimate" => Float64(fao_est),
+                    "lower" => Float64(fao_lo),
+                    "upper" => Float64(fao_hi),
+                    "weight" => Float64(weights[1]),
+                ),
+                Dict{String,Any}(
+                    "model_name" => "exp_smoothing",
+                    "yield_estimate" => Float64(exp_est),
+                    "lower" => Float64(exp_lo),
+                    "upper" => Float64(exp_hi),
+                    "weight" => Float64(weights[2]),
+                ),
+                Dict{String,Any}(
+                    "model_name" => "quantile_regression",
+                    "yield_estimate" => Float64(qr_est),
+                    "lower" => Float64(qr_lo),
+                    "upper" => Float64(qr_hi),
+                    "weight" => Float64(weights[3]),
+                ),
+            ])
+        end
+
+        push!(results, item)
     end
 
     return results

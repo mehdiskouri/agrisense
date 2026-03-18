@@ -1,21 +1,29 @@
 using Test
 using AgriSenseCore
 
-# Allow scalar indexing on CuArrays during tests — tests validate values element-by-element
-if AgriSenseCore.HAS_CUDA
-    using CUDA
-    CUDA.allowscalar(true)
+function _run_all_tests()::Nothing
+    @testset "AgriSenseCore" begin
+        include("test_types.jl")
+        include("test_hypergraph.jl")
+        include("test_bridge.jl")
+        include("test_history.jl")
+        include("test_irrigation.jl")
+        include("test_nutrients.jl")
+        include("test_yield.jl")
+        include("test_backtesting.jl")
+        include("test_anomaly.jl")
+        include("test_synthetic.jl")
+        include("test_gpu.jl")
+    end
+    return nothing
 end
 
-@testset "AgriSenseCore" begin
-    include("test_types.jl")
-    include("test_hypergraph.jl")
-    include("test_bridge.jl")
-    include("test_history.jl")
-    include("test_irrigation.jl")
-    include("test_nutrients.jl")
-    include("test_yield.jl")
-    include("test_anomaly.jl")
-    include("test_synthetic.jl")
-    include("test_gpu.jl")
+# Scope scalar indexing opt-in to this test run only when CUDA is available.
+if AgriSenseCore.HAS_CUDA
+    using CUDA
+    CUDA.allowscalar() do
+        _run_all_tests()
+    end
+else
+    _run_all_tests()
 end

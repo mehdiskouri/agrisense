@@ -18,7 +18,6 @@ else
 using CUDA
 using CUDA.CUSPARSE
 using KernelAbstractions
-CUDA.allowscalar(true)
 
 # ============================================================================
 # Helper: build a multi-layer graph with realistic features

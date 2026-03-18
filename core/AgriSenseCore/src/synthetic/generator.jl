@@ -7,6 +7,90 @@
 
 Generate a complete synthetic dataset for a demo farm.
 """
+function _compute_synthetic_yield_oracle(
+    n_steps::Int,
+    n_beds::Int,
+    n_zones::Int,
+    soil::Dict{String,Any},
+    weather::Dict{String,Any},
+    npk::Dict{String,Any},
+    lighting::Dict{String,Any},
+    vision::Dict{String,Any},
+)::Dict{String,Any}
+    bed_zone_index = Int[mod(i - 1, n_zones) + 1 for i in 1:n_beds]
+    target_yield = Float32[4.0f0 + 0.6f0 * sin(0.5f0 * i) for i in 1:n_beds]
+
+    soil_m = Matrix{Float32}(soil["moisture"])
+    weather_t = Matrix{Float32}(weather["temperature"])
+    weather_p = Matrix{Float32}(weather["precipitation_mm"])
+    npk_n = Matrix{Float32}(npk["nitrogen_mg_kg"])
+    npk_pv = Matrix{Float32}(npk["phosphorus_mg_kg"])
+    npk_k = Matrix{Float32}(npk["potassium_mg_kg"])
+    dli = Matrix{Float32}(lighting["dli_cumulative"])
+    anomaly = Matrix{Int8}(vision["anomaly_code"])
+
+    n_soil = size(soil_m, 2)
+    n_weather = size(weather_t, 2)
+    n_lights = size(dli, 2)
+    n_weeks = max(1, size(npk_n, 1))
+    cadence_minutes = Int(get(soil, "cadence_minutes", CADENCE_MINUTES))
+
+    yield_oracle = zeros(Float32, n_steps, n_beds)
+    for t in 1:n_steps
+        week_idx = clamp(Int(cld(t * cadence_minutes, 7 * 24 * 60)), 1, n_weeks)
+        for b in 1:n_beds
+            zone_idx = bed_zone_index[b]
+            soil_col = mod(zone_idx - 1, max(1, n_soil)) + 1
+            weather_col = mod(zone_idx - 1, max(1, n_weather)) + 1
+            light_col = n_lights == 0 ? 1 : (mod(b - 1, n_lights) + 1)
+
+            moisture = soil_m[t, soil_col]
+            temp = weather_t[t, weather_col]
+            precip = weather_p[t, weather_col]
+            light_val = n_lights == 0 ? 20.0f0 : dli[t, light_col]
+            anomaly_code = size(anomaly, 2) == 0 ? 0 : Int(anomaly[t, mod(b - 1, size(anomaly, 2)) + 1])
+
+            n_val = npk_n[week_idx, zone_idx]
+            p_val = npk_pv[week_idx, zone_idx]
+            k_val = npk_k[week_idx, zone_idx]
+
+            moisture = isnan(moisture) ? 0.25f0 : moisture
+            temp = isnan(temp) ? 22.0f0 : temp
+            precip = isnan(precip) ? 0.0f0 : precip
+            light_val = isnan(light_val) ? 20.0f0 : light_val
+            n_val = isnan(n_val) ? 80.0f0 : n_val
+            p_val = isnan(p_val) ? 60.0f0 : p_val
+            k_val = isnan(k_val) ? 70.0f0 : k_val
+
+            ks = clamp((moisture - 0.15f0) / (0.45f0 - 0.15f0), 0.0f0, 1.0f0)
+            kw = temp < 5.0f0 ? 0.0f0 : (temp < 15.0f0 ? (temp - 5.0f0) / 10.0f0 :
+                 (temp <= 30.0f0 ? 1.0f0 : (temp < 40.0f0 ? (40.0f0 - temp) / 10.0f0 : 0.0f0)))
+            kw = clamp(kw * (1.0f0 + 0.05f0 * clamp(precip / 5.0f0, 0.0f0, 1.0f0)), 0.0f0, 1.0f0)
+            kn = clamp(1.0f0 - (max(80.0f0 - n_val, 0.0f0) / 80.0f0 +
+                                max(60.0f0 - p_val, 0.0f0) / 60.0f0 +
+                                max(70.0f0 - k_val, 0.0f0) / 70.0f0) / 3.0f0, 0.0f0, 1.0f0)
+            kl = clamp(light_val / 20.0f0, 0.0f0, 1.0f0)
+
+            stage = clamp(Float32(t) / Float32(max(n_steps, 1)), 0.0f0, 1.0f0)
+            growth_scale = clamp(0.35f0 + 0.65f0 * stage, 0.2f0, 1.0f0)
+            seasonal = 1.0f0 + 0.08f0 * sin(Float32(2.0f0 * pi) * (Float32(t) / 96.0f0) / 30.0f0)
+            anomaly_penalty = anomaly_code <= 0 ? 1.0f0 : (anomaly_code == 1 ? 0.88f0 : 0.82f0)
+
+            quality = 0.35f0 * ks + 0.25f0 * kn + 0.20f0 * kw + 0.20f0 * kl
+            yield_oracle[t, b] = max(0.0f0, target_yield[b] * growth_scale * seasonal * quality * anomaly_penalty)
+        end
+    end
+
+    return Dict{String,Any}(
+        "layer" => "yield_oracle",
+        "n_steps" => n_steps,
+        "n_beds" => n_beds,
+        "bed_zone_index" => bed_zone_index,
+        "target_yield_kg_m2" => target_yield,
+        "yield_kg_m2" => yield_oracle,
+    )
+end
+
 function generate(farm_type::Symbol, days::Int, seed::Int;
                   outage_prob::Float32=DEFAULT_OUTAGE_PROB,
                   outage_duration_range::Tuple{Int,Int}=DEFAULT_OUTAGE_DURATION_RANGE,
@@ -138,6 +222,17 @@ function generate(farm_type::Symbol, days::Int, seed::Int;
         ),
     )
 
+    yield_oracle = _compute_synthetic_yield_oracle(
+        n_steps,
+        n_beds,
+        n_zones,
+        soil,
+        weather,
+        npk,
+        lighting,
+        vision,
+    )
+
     return Dict{String,Any}(
         "farm_type" => string(farm_type),
         "days" => days,
@@ -159,6 +254,7 @@ function generate(farm_type::Symbol, days::Int, seed::Int;
             "npk" => npk,
             "lighting" => lighting,
             "vision" => vision,
+            "yield_oracle" => yield_oracle,
         ),
         "status" => "ok",
     )

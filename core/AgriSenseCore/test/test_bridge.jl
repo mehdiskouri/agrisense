@@ -373,4 +373,45 @@ end
         evict_graph!("bridge-farm-A")
         evict_graph!("bridge-farm-B")
     end
+
+    @testset "Phase 15: train_yield_residual insufficient data path" begin
+        clear_cache!()
+
+        function make_small_crop_graph(fid::String)
+            verts = [Dict{String,Any}("id" => "v$i", "type" => "crop_bed") for i in 1:8]
+            edgs = [Dict{String,Any}(
+                "id" => "e-crop-1", "layer" => "crop_requirements",
+                "vertex_ids" => ["v$i" for i in 1:8],
+                "metadata" => Dict{String,Any}(),
+            )]
+            cfg = Dict{String,Any}(
+                "farm_id" => fid,
+                "farm_type" => "greenhouse",
+                "active_layers" => ["crop_requirements"],
+                "zones" => [],
+                "models" => Dict("irrigation" => false, "nutrients" => false,
+                                 "yield_forecast" => true, "anomaly_detection" => false),
+                "vertices" => verts,
+                "edges" => edgs,
+            )
+            g = to_cpu(build_hypergraph(FarmProfile(cfg), cfg["vertices"], cfg["edges"]))
+            for v in 1:8
+                g.layers[:crop_requirements].vertex_features[v, 1] = 5.0f0
+                g.layers[:crop_requirements].vertex_features[v, 2] = 0.5f0
+                g.layers[:crop_requirements].vertex_features[v, 3] = 80.0f0
+                g.layers[:crop_requirements].vertex_features[v, 4] = 60.0f0
+                g.layers[:crop_requirements].vertex_features[v, 5] = 70.0f0
+            end
+            cache_graph!(fid, g)
+        end
+
+        make_small_crop_graph("bridge-farm-insufficient")
+        too_few = Dict{String,Any}("v1" => 6.0)
+        res = train_yield_residual(Dict{String,Any}("farm_id" => "bridge-farm-insufficient"), too_few)
+        @test res["status"] == "insufficient_data"
+        @test res["n_observations"] == 1
+        @test res["n_coefficients"] == 0
+
+        evict_graph!("bridge-farm-insufficient")
+    end
 end

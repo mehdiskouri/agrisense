@@ -70,6 +70,66 @@ function make_yield_graph(;
     return graph
 end
 
+# ===========================================================================
+# Ensemble Yield Tests
+# ===========================================================================
+@testset "Ensemble Yield Forecast" begin
+    @testset "seasonal decomposition returns aligned outputs" begin
+        series = Float32[1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 3.0, 2.0]
+        trend, seasonal, residual = seasonal_decompose(series, 4)
+        @test length(trend) == length(series)
+        @test length(seasonal) == length(series)
+        @test length(residual) == length(series)
+        @test !any(isnan.(seasonal))
+    end
+
+    @testset "quantile regression ordering" begin
+        graph = make_yield_graph()
+        y50, y10, y90 = compute_quantile_regression_forecast(graph)
+        @test length(y50) == graph.n_vertices
+        @test all(y10 .<= y50)
+        @test all(y50 .<= y90)
+    end
+
+    @testset "ensemble forecast emits model_layer and optional members" begin
+        clear_ensemble_weights!()
+        graph = make_yield_graph()
+        set_ensemble_weights!(graph.farm_id, Float32[0.5, 0.2, 0.3])
+
+        no_members = compute_ensemble_yield_forecast(graph; include_members=false)
+        @test !isempty(no_members)
+        @test no_members[1]["model_layer"] == "ensemble"
+        @test !haskey(no_members[1], "ensemble_members")
+
+        with_members = compute_ensemble_yield_forecast(graph; include_members=true)
+        @test !isempty(with_members)
+        @test haskey(with_members[1], "ensemble_members")
+        @test length(with_members[1]["ensemble_members"]) == 3
+    end
+
+    @testset "weighted quantile combiner is order-consistent" begin
+        mid, lo, hi = AgriSenseCore._weighted_quantile_ci(
+            Float32[2.0, 4.0, 6.0],
+            Float32[3.0, 5.0, 7.0],
+            Float32[4.0, 6.0, 8.0],
+            Float32[0.6, 0.3, 0.1],
+        )
+        @test lo <= mid <= hi
+        @test lo >= 2.0f0
+        @test hi <= 8.0f0
+    end
+
+    @testset "single-model alias preserves behavior" begin
+        graph = make_yield_graph()
+        a = compute_yield_forecast(graph)
+        b = compute_yield_forecast_single(graph)
+        @test length(a) == length(b)
+        if !isempty(a)
+            @test a[1]["crop_bed_id"] == b[1]["crop_bed_id"]
+        end
+    end
+end
+
 # ---------------------------------------------------------------------------
 @testset "Yield Forecast" begin
 
