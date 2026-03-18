@@ -34,6 +34,9 @@ dependencies = [
     "juliacall>=0.9.23",
     # --- Observability ---
     "structlog>=24.4.0",
+    # --- Spreadsheet reports ---
+    "openpyxl>=3.1.0",
+    "reportlab>=4.2.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +49,7 @@ dev = [
     "mypy>=1.13.0",
     "types-python-jose>=3.5.0.20250531",
     "types-passlib>=1.7.7.20250602",
+    "types-openpyxl>=3.1.5.20250919",
     "pre-commit>=4.0.0",
 ]
 
