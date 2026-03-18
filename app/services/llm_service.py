@@ -1,18 +1,29 @@
-"""LLM integration — intent classification, context assembly, prompt, response parsing."""
+"""LangChain-based LLM integration for natural-language farm queries."""
 
 from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, cast
 
-import httpx
+from langchain.agents import create_agent
+from langchain_anthropic import ChatAnthropic
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.schemas.ask import AskLanguage, AskRecommendation, AskResponse, AskSource
+from app.services.agent_tools import build_tools
 from app.services.analytics_service import AnalyticsService
+from app.services.conversation_memory import (
+    build_memory,
+    clear_conversation,
+    get_window_messages,
+    refresh_ttl,
+)
 
 
 class LLMService:
@@ -21,152 +32,133 @@ class LLMService:
         self.redis_client = redis_client
         self.settings = get_settings()
 
-    def classify_intent(self, question: str) -> str:
-        normalized = question.lower()
-        if any(token in normalized for token in ["irrig", "water", "valve"]):
-            return "irrigation"
-        if any(
-            token in normalized
-            for token in ["npk", "nutr", "fertil", "phosph", "nitrogen", "potassium"]
-        ):
-            return "nutrients"
-        if any(token in normalized for token in ["yield", "harvest", "production", "forecast"]):
-            return "yield"
-        if any(token in normalized for token in ["alert", "anomaly", "disease", "pest"]):
-            return "alerts"
-        return "status"
-
-    async def ask(self, farm_id: uuid.UUID, question: str, language: AskLanguage) -> AskResponse:
-        intent = self.classify_intent(question)
-        context = await self.assemble_context(farm_id, intent)
-        llm_payload = await self.call_llm(
-            question=question, language=language, intent=intent, context=context
-        )
-        return self.parse_response(
-            farm_id=farm_id,
-            question=question,
-            language=language,
-            intent=intent,
-            context=context,
-            llm_payload=llm_payload,
-        )
-
-    async def assemble_context(self, farm_id: uuid.UUID, intent: str) -> dict[str, Any]:
-        analytics = AnalyticsService(self.db, self.redis_client)
-        if intent == "irrigation":
-            schedule = await analytics.get_irrigation_schedule(farm_id, horizon_days=3)
-            return {
-                "intent": intent,
-                "schedule": schedule.items,
-                "generated_at": schedule.generated_at.isoformat(),
-            }
-        if intent == "nutrients":
-            report = await analytics.get_nutrient_report(farm_id)
-            return {
-                "intent": intent,
-                "nutrients": report.items,
-                "generated_at": report.generated_at.isoformat(),
-            }
-        if intent == "yield":
-            forecast = await analytics.get_ensemble_yield_forecast(
-                farm_id,
-                include_members=True,
-            )
-            return {
-                "intent": intent,
-                "yield": forecast.items,
-                "ensemble_weights": forecast.ensemble_weights,
-                "generated_at": forecast.generated_at.isoformat(),
-            }
-        if intent == "alerts":
-            alerts = await analytics.get_active_alerts(farm_id)
-            return {
-                "intent": intent,
-                "alerts": [zone.model_dump() for zone in alerts.zones],
-                "generated_at": alerts.generated_at.isoformat(),
-            }
-
-        status = await analytics.get_farm_status(farm_id)
-        return {
-            "intent": intent,
-            "zones": [zone.model_dump() for zone in status.zones],
-            "generated_at": status.generated_at.isoformat(),
-        }
-
-    async def call_llm(
-        self,
-        *,
-        question: str,
-        language: AskLanguage,
-        intent: str,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self.settings.anthropic_api_key:
-            return self._fallback_response(intent=intent, language=language, context=context)
-
-        system_prompt = (
-            "You are an agricultural advisor. "
-            "Answer only from the provided context. "
-            "If context is missing, say so clearly. "
-            "Return strict JSON with keys: answer, confidence, recommendations, sources."
-        )
-        user_prompt = {
-            "language": language.value,
-            "intent": intent,
-            "question": question,
-            "context": context,
-        }
-
-        headers = {
-            "x-api-key": self.settings.anthropic_api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
-        body = {
-            "model": self.settings.anthropic_model,
-            "max_tokens": 700,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": json.dumps(user_prompt)}],
-        }
-
-        async with httpx.AsyncClient(timeout=self.settings.anthropic_timeout_seconds) as client:
-            response = await client.post(
-                self.settings.anthropic_base_url, headers=headers, json=body
-            )
-            response.raise_for_status()
-            payload = response.json()
-
-        content = payload.get("content")
-        if not isinstance(content, list) or not content:
-            return self._fallback_response(intent=intent, language=language, context=context)
-        text = str(content[0].get("text") or "").strip()
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            return self._fallback_response(intent=intent, language=language, context=context)
-        if not isinstance(parsed, dict):
-            return self._fallback_response(intent=intent, language=language, context=context)
-        return parsed
-
-    def parse_response(
+    async def ask(
         self,
         *,
         farm_id: uuid.UUID,
         question: str,
         language: AskLanguage,
-        intent: str,
-        context: dict[str, Any],
-        llm_payload: dict[str, Any],
+        user_id: uuid.UUID,
+        conversation_id: str | None = None,
     ) -> AskResponse:
-        answer = str(llm_payload.get("answer") or "No grounded answer available for this request.")
-        confidence_raw = llm_payload.get("confidence", 0.3)
+        if not self.settings.anthropic_api_key:
+            return self._fallback_response(
+                farm_id=farm_id,
+                question=question,
+                language=language,
+                conversation_id=conversation_id or f"conversation:{farm_id}:{user_id}",
+            )
+
+        llm = ChatAnthropic(
+            model=self.settings.anthropic_model,
+            api_key=self.settings.anthropic_api_key,
+            timeout=self.settings.anthropic_timeout_seconds,
+        )
+
+        analytics = AnalyticsService(self.db, self.redis_client)
+        tools = build_tools(farm_id, analytics)
+        chat_history, resolved_conversation_id = build_memory(
+            redis_url=self.settings.redis_url,
+            farm_id=farm_id,
+            user_id=user_id,
+            settings=self.settings,
+            conversation_id=conversation_id,
+            redis_available=self.redis_client is not None,
+        )
+
+        history_messages = await get_window_messages(
+            chat_history,
+            self.settings.langchain_max_context_messages,
+        )
+
+        agent = create_agent(
+            model=llm,
+            tools=tools,
+            system_prompt=self._build_system_prompt(language),
+            debug=self.settings.langchain_verbose,
+        )
+
+        messages: list[BaseMessage] = [
+            *history_messages,
+            HumanMessage(content=question),
+        ]
+        runtime_config: RunnableConfig = {
+            "recursion_limit": self.settings.langchain_max_iterations,
+        }
+        agent_runtime = cast(Any, agent)
+        raw_result = await agent_runtime.ainvoke(
+            {"messages": messages},
+            config=runtime_config,
+        )
+        result = cast(dict[str, Any], raw_result)
+
+        final_ai_message = self._extract_final_ai_message(result)
+        await self._persist_interaction(chat_history, question, final_ai_message)
+
+        if self.redis_client is not None:
+            await refresh_ttl(
+                self.settings.redis_url,
+                resolved_conversation_id,
+                self.settings.langchain_conversation_ttl_seconds,
+            )
+
+        return self._parse_agent_output(
+            farm_id=farm_id,
+            question=question,
+            language=language,
+            conversation_id=resolved_conversation_id,
+            agent_result=result,
+        )
+
+    def _build_system_prompt(self, language: AskLanguage) -> str:
+        language_directive = {
+            AskLanguage.en: "Respond in English.",
+            AskLanguage.fr: "Reponds en francais.",
+            AskLanguage.ar: "اجب باللغة العربية.",
+        }[language]
+        return (
+            "You are an agricultural advisor for a precision farming platform. "
+            "Answer only from tool outputs and never invent telemetry. "
+            f"{language_directive} "
+            "If required data is missing, explicitly say what is missing. "
+            "When possible, return concise recommendations and a confidence score from 0 to 1. "
+            "Prefer structured JSON with keys: answer, confidence, recommendations, sources."
+        )
+
+    def _parse_agent_output(
+        self,
+        *,
+        farm_id: uuid.UUID,
+        question: str,
+        language: AskLanguage,
+        conversation_id: str,
+        agent_result: dict[str, Any],
+    ) -> AskResponse:
+        tools_called = self._extract_tools_called(agent_result)
+        intent = self._intent_from_tools(tools_called)
+
+        output_raw = self._extract_ai_content(agent_result)
+        parsed_payload: dict[str, Any] = {}
+        if isinstance(output_raw, str):
+            output_text = output_raw.strip()
+            try:
+                candidate = json.loads(output_text)
+                if isinstance(candidate, dict):
+                    parsed_payload = candidate
+            except json.JSONDecodeError:
+                parsed_payload = {"answer": output_text}
+        elif isinstance(output_raw, dict):
+            parsed_payload = output_raw
+
+        answer = str(parsed_payload.get("answer") or output_raw or "No grounded answer available.")
+        confidence_raw = parsed_payload.get("confidence", 0.3)
         try:
             confidence = float(confidence_raw)
         except (TypeError, ValueError):
             confidence = 0.3
         confidence = max(0.0, min(1.0, confidence))
 
-        recommendations_raw = llm_payload.get("recommendations")
+        recommendations_raw = parsed_payload.get("recommendations")
         recommendations: list[AskRecommendation] = []
         if isinstance(recommendations_raw, list):
             for item in recommendations_raw:
@@ -176,7 +168,7 @@ class LLMService:
                 rationale = str(item.get("rationale") or "Based on current farm telemetry")
                 recommendations.append(AskRecommendation(action=action, rationale=rationale))
 
-        sources_raw = llm_payload.get("sources")
+        sources_raw = parsed_payload.get("sources")
         sources: list[AskSource] = []
         if isinstance(sources_raw, list):
             for item in sources_raw:
@@ -200,7 +192,7 @@ class LLMService:
                 AskSource(
                     layer=intent,
                     reference=f"farm:{farm_id}:{intent}",
-                    payload={"context_keys": list(context.keys())},
+                    payload={"tools_called": tools_called},
                 )
             )
 
@@ -213,34 +205,133 @@ class LLMService:
             confidence=confidence,
             recommendations=recommendations,
             sources=sources,
+            conversation_id=conversation_id,
+            tools_called=tools_called,
         )
+
+    @staticmethod
+    def _extract_tools_called(agent_result: dict[str, Any]) -> list[str]:
+        tools_called: list[str] = []
+        messages_raw = agent_result.get("messages")
+        if not isinstance(messages_raw, list):
+            return tools_called
+
+        for message in messages_raw:
+            if isinstance(message, AIMessage):
+                for tool_call in message.tool_calls:
+                    call_name = tool_call.get("name")
+                    if isinstance(call_name, str) and call_name and call_name not in tools_called:
+                        tools_called.append(call_name)
+            if isinstance(message, ToolMessage):
+                tool_message_name = getattr(message, "name", None)
+                if (
+                    isinstance(tool_message_name, str)
+                    and tool_message_name
+                    and tool_message_name not in tools_called
+                ):
+                    tools_called.append(tool_message_name)
+        return tools_called
+
+    @staticmethod
+    def _extract_final_ai_message(agent_result: dict[str, Any]) -> AIMessage:
+        messages_raw = agent_result.get("messages")
+        if isinstance(messages_raw, list):
+            for message in reversed(messages_raw):
+                if isinstance(message, AIMessage):
+                    return message
+        return AIMessage(content="")
+
+    @staticmethod
+    def _extract_ai_content(agent_result: dict[str, Any]) -> str:
+        message = LLMService._extract_final_ai_message(agent_result)
+        content = message.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: list[str] = []
+            for chunk in content:
+                if isinstance(chunk, str):
+                    chunks.append(chunk)
+                    continue
+                if isinstance(chunk, dict):
+                    text = chunk.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+            return "\n".join(chunks).strip()
+        return ""
+
+    @staticmethod
+    async def _persist_interaction(
+        chat_history: BaseChatMessageHistory,
+        question: str,
+        ai_message: AIMessage,
+    ) -> None:
+        ai_content = ai_message.content
+        ai_text = ai_content if isinstance(ai_content, str) else ""
+        if not ai_text:
+            ai_text = "No grounded answer available."
+        await chat_history.aadd_messages(
+            [
+                HumanMessage(content=question),
+                AIMessage(content=ai_text),
+            ]
+        )
+
+    @staticmethod
+    def _intent_from_tools(tools_called: list[str]) -> str:
+        mapping = {
+            "get_irrigation_schedule": "irrigation",
+            "get_nutrient_report": "nutrients",
+            "get_yield_forecast": "yield",
+            "get_active_alerts": "alerts",
+            "run_yield_backtest": "yield",
+            "get_zone_detail": "status",
+            "get_farm_status": "status",
+        }
+        for tool_name in tools_called:
+            if tool_name in mapping:
+                return mapping[tool_name]
+        return "status"
+
+    async def clear_conversation(self, farm_id: uuid.UUID, user_id: uuid.UUID) -> str:
+        if self.redis_client is None:
+            return f"conversation:{farm_id}:{user_id}"
+        return await clear_conversation(self.settings.redis_url, farm_id, user_id)
 
     @staticmethod
     def _fallback_response(
         *,
-        intent: str,
+        farm_id: uuid.UUID,
+        question: str,
         language: AskLanguage,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
+        conversation_id: str,
+    ) -> AskResponse:
+        intent = "status"
         language_hint = {
             AskLanguage.en: "Based on current farm telemetry",
             AskLanguage.fr: "Selon les données actuelles de la ferme",
             AskLanguage.ar: "بناءً على بيانات المزرعة الحالية",
         }[language]
-        return {
-            "answer": f"{language_hint}, intent={intent}. Please review recommended actions.",
-            "confidence": 0.62,
-            "recommendations": [
-                {
-                    "action": "Review the latest analytics snapshot",
-                    "rationale": "Grounded in current measured values",
-                }
+        return AskResponse(
+            farm_id=str(farm_id),
+            question=question,
+            language=language,
+            intent=intent,
+            answer=f"{language_hint}, intent={intent}. Please review recommended actions.",
+            confidence=0.62,
+            recommendations=[
+                AskRecommendation(
+                    action="Review the latest analytics snapshot",
+                    rationale="Grounded in current measured values",
+                )
             ],
-            "sources": [
-                {
-                    "layer": intent,
-                    "reference": "analytics_context",
-                    "payload": {"keys": list(context.keys())},
-                }
+            sources=[
+                AskSource(
+                    layer=intent,
+                    reference="analytics_context",
+                    payload={"fallback": True},
+                )
             ],
-        }
+            conversation_id=conversation_id,
+            tools_called=[],
+        )

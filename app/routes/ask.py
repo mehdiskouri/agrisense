@@ -46,7 +46,32 @@ async def ask_farm(
     service = LLMService(db, getattr(request.app.state, "redis", None))
     try:
         return await service.ask(
-            farm_id=farm_id, question=payload.question, language=payload.language
+            farm_id=farm_id,
+            question=payload.question,
+            language=payload.language,
+            user_id=_user.id,
+            conversation_id=payload.conversation_id,
         )
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+@router.delete("/{farm_id}/conversation", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_farm_conversation(
+    farm_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(
+        require_role(
+            UserRoleEnum.admin,
+            UserRoleEnum.agronomist,
+            UserRoleEnum.field_operator,
+            UserRoleEnum.readonly,
+        )
+    ),
+) -> None:
+    service = LLMService(db, getattr(request.app.state, "redis", None))
+    try:
+        await service.clear_conversation(farm_id=farm_id, user_id=_user.id)
     except Exception as exc:
         raise _map_error(exc) from exc

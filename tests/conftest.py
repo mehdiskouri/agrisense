@@ -154,6 +154,31 @@ def bridge_stub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             },
         },
     )
+    monkeypatch.setattr(
+        julia_bridge,
+        "nutrient_report",
+        lambda _farm_id: [
+            {
+                "zone_id": "zone-1",
+                "nitrogen_deficit": 0.12,
+                "phosphorus_deficit": 0.08,
+                "potassium_deficit": 0.06,
+                "urgency": "medium",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        julia_bridge,
+        "detect_anomalies",
+        lambda _farm_id: [
+            {
+                "zone_id": "zone-1",
+                "layer": "vision",
+                "severity": "warning",
+                "anomaly_type": "wilting",
+            }
+        ],
+    )
     return graph_state
 
 
@@ -262,3 +287,14 @@ def api_key_sha256(api_key_plaintext: str) -> str:
 @pytest.fixture
 def now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+@pytest.fixture
+def fake_chat_model() -> type:
+    """Simple fake chat model class for LangChain tests via monkeypatching."""
+
+    class FakeChatModel:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.kwargs = _kwargs
+
+    return FakeChatModel

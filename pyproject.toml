@@ -23,6 +23,10 @@ dependencies = [
     "redis>=5.2.0",
     # --- HTTP client (LLM calls) ---
     "httpx>=0.28.0",
+    # --- LangChain agent stack ---
+    "langchain>=1.0.0",
+    "langchain-anthropic>=1.0.0",
+    "langchain-community>=1.0.0",
     # --- Auth ---
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",

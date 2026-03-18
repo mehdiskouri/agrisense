@@ -26,6 +26,7 @@ env/
 .env
 .env.local
 .env.*.local
+.env.keys
 
 # ─── Databases & state ───────────────────────────────────────────────────
 *.db
