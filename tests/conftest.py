@@ -170,7 +170,7 @@ def bridge_stub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(
         julia_bridge,
         "detect_anomalies",
-        lambda _farm_id: [
+        lambda _farm_id, thresholds=None: [
             {
                 "zone_id": "zone-1",
                 "layer": "vision",

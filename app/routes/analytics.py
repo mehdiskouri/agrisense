@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_role
 from app.database import async_session_factory, get_db
-from app.models.enums import UserRoleEnum
+from app.models.enums import AnomalySeverityEnum, HyperEdgeLayerEnum, UserRoleEnum
 from app.schemas.analytics import (
     AlertsResponse,
     BacktestJobCreateResponse,
@@ -26,6 +27,7 @@ from app.schemas.analytics import (
     ZoneDetailQuery,
     ZoneDetailResponse,
 )
+from app.schemas.anomalies import AnomalyHistoryQuery, AnomalyHistoryResponse
 from app.schemas.reports import ReportJobCreateResponse, ReportJobStatusResponse, ReportRequest
 from app.services.analytics_service import AnalyticsService
 from app.services.report_service import ReportService
@@ -305,6 +307,45 @@ async def get_active_alerts(
     service = AnalyticsService(db, getattr(request.app.state, "redis", None))
     try:
         return await service.get_active_alerts(farm_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+@router.get("/{farm_id}/anomalies/history", response_model=AnomalyHistoryResponse)
+async def get_anomaly_history(
+    farm_id: uuid.UUID,
+    request: Request,
+    severity: AnomalySeverityEnum | None = Query(default=None),
+    layer: HyperEdgeLayerEnum | None = Query(default=None),
+    vertex_id: uuid.UUID | None = Query(default=None),
+    anomaly_type: str | None = Query(default=None),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    _user: object = Depends(
+        require_role(
+            UserRoleEnum.admin,
+            UserRoleEnum.agronomist,
+            UserRoleEnum.field_operator,
+            UserRoleEnum.readonly,
+        )
+    ),
+) -> AnomalyHistoryResponse:
+    service = AnalyticsService(db, getattr(request.app.state, "redis", None))
+    try:
+        query = AnomalyHistoryQuery(
+            severity=severity,
+            layer=layer,
+            vertex_id=vertex_id,
+            anomaly_type=anomaly_type,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+        return await service.get_anomaly_history(farm_id, query)
     except Exception as exc:
         raise _map_error(exc) from exc
 

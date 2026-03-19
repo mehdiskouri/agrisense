@@ -7,18 +7,19 @@ autogenerate sees all tables.  Application code can also do::
 """
 
 # ── Base & Mixins ───────────────────────────────────────────────────────────
+# ── Crop reference ──────────────────────────────────────────────────────────
+from app.models.anomalies import AnomalyEvent, AnomalyThreshold, WebhookSubscription
 from app.models.base import (
     Base,
     TimeSeriesMixin,
     TimestampMixin,
     UUIDPrimaryKeyMixin,
 )
-
-# ── Crop reference ──────────────────────────────────────────────────────────
 from app.models.crops import CropProfile
 
 # ── Enums ───────────────────────────────────────────────────────────────────
 from app.models.enums import (
+    AnomalySeverityEnum,
     AnomalyTypeEnum,
     FarmTypeEnum,
     HyperEdgeLayerEnum,
@@ -45,6 +46,9 @@ from app.models.sensors import (
 )
 
 __all__ = [
+    "AnomalyEvent",
+    "AnomalySeverityEnum",
+    "AnomalyThreshold",
     "AnomalyTypeEnum",
     "BacktestJob",
     "Base",
@@ -69,6 +73,7 @@ __all__ = [
     "VertexTypeEnum",
     "VisionEvent",
     "WeatherReading",
+    "WebhookSubscription",
     "Zone",
     "ZoneTypeEnum",
 ]

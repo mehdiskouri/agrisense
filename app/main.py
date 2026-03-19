@@ -1,8 +1,9 @@
 """FastAPI application entrypoint — lifespan, routers, middleware."""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -20,9 +21,10 @@ from app.middleware.logging import (
 )
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models.farm import Farm
-from app.routes import analytics, ask, farms, ingest, jobs, ws
+from app.routes import analytics, anomalies, ask, farms, ingest, jobs, ws
 from app.services import julia_bridge
 from app.services.farm_service import FarmService
+from app.services.webhook_service import run_dispatch_queue_worker
 
 logger = logging.getLogger("agrisense")
 
@@ -75,6 +77,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     redis: Redis | None = None
+    webhook_worker_stop: asyncio.Event | None = None
+    webhook_worker_task: asyncio.Task[None] | None = None
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
@@ -82,6 +86,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         redis = Redis.from_url(settings.redis_url, decode_responses=True)
         await _ping_redis(redis)
         app.state.redis = redis
+
+        webhook_worker_stop = asyncio.Event()
+        webhook_worker_task = asyncio.create_task(
+            run_dispatch_queue_worker(redis, webhook_worker_stop)
+        )
+        app.state.webhook_worker_task = webhook_worker_task
 
         julia_bridge.initialize_julia()
         julia_bridge.generate_synthetic(
@@ -97,12 +107,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             app.state.graph_bootstrap_count = 0
     except Exception as exc:
+        if webhook_worker_task is not None:
+            webhook_worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await webhook_worker_task
         logger.exception("startup failure", extra={"error": str(exc)})
         raise
 
     yield
 
     logger.info("AgriSense shutting down")
+    if webhook_worker_stop is not None:
+        webhook_worker_stop.set()
+    if webhook_worker_task is not None:
+        try:
+            await asyncio.wait_for(webhook_worker_task, timeout=5.0)
+        except TimeoutError:
+            webhook_worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await webhook_worker_task
+
     if redis is not None:
         await redis.aclose()
     await engine.dispose()
@@ -196,6 +220,7 @@ async def readiness_check(request: Request) -> JSONResponse:
 app.include_router(farms.router, prefix="/api/v1")
 app.include_router(ingest.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
+app.include_router(anomalies.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(ask.router, prefix="/api/v1")
 # Auth provisioning endpoints are intentionally external for this portfolio service.
