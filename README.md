@@ -30,6 +30,7 @@ Built with FastAPI, PostgreSQL 16 + PostGIS, Redis 7, Julia 1.12 via `juliacall`
 - [Observability](#observability)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
+- [Design Decisions](#design-decisions)
 - [Demo Queries](#demo-queries)
 - [Contributing](#contributing)
 - [License](#license)
@@ -558,6 +559,12 @@ agrisense/
 ├── CONTRIBUTING.md                   # Development setup + contribution guidelines
 └── LICENSE                           # MIT
 ```
+
+---
+
+## Design Decisions
+
+See the architectural decision record: [`architectural_decisions_record.md`](architectural_decisions_record.md).
 
 ---
 

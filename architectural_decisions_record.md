@@ -4,8 +4,8 @@
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-03-19 |
-| **Owners** | Core platform maintainers |
-| **Supersedes** | `ADR.md` (2026-03-02) |
+| **Owners** | SKOURI MEHDI |
+
 
 ---
 

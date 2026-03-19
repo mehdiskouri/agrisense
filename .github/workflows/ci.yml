@@ -106,7 +106,7 @@ jobs:
 
       - uses: julia-actions/cache@v2
         with:
-          cache-name: "julia-agrisensecore"
+          cache-name: "julia-agrisensecore-v2"
 
       - name: Instantiate Julia project
         run: julia --project=core/AgriSenseCore -e 'using Pkg; Pkg.instantiate()'
@@ -173,7 +173,7 @@ jobs:
 
       - uses: julia-actions/cache@v2
         with:
-          cache-name: "julia-agrisensecore-gpu"
+          cache-name: "julia-agrisensecore-gpu-v2"
 
       - name: Instantiate Julia project
         run: julia --project=core/AgriSenseCore -e 'using Pkg; Pkg.instantiate()'
