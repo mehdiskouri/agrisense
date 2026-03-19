@@ -554,7 +554,7 @@ agrisense/
 ├── Makefile                          # 14 targets: dev, test, lint, migrate, docker-up, etc.
 ├── pyproject.toml                    # Python package config + tool settings (ruff, mypy)
 ├── alembic.ini                       # Alembic configuration
-├── ADR.md                            # Architecture Decision Record
+├── architectural_decisions_record.md  # Architecture Decision Record (17 decisions)
 ├── CONTRIBUTING.md                   # Development setup + contribution guidelines
 └── LICENSE                           # MIT
 ```
