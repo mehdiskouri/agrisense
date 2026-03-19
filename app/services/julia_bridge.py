@@ -228,11 +228,25 @@ def backtest_yield(
         raise JuliaBridgeError(f"backtest_yield failed: {exc}") from exc
 
 
-def detect_anomalies(farm_id: str) -> list[dict[str, Any]]:
+def detect_anomalies(
+    farm_id: str,
+    thresholds: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     start = time.perf_counter()
     module = _require_module()
     try:
-        result = module.detect_anomalies({"farm_id": str(farm_id)})
+        state = {"farm_id": str(farm_id)}
+        threshold_payload = _to_plain(thresholds) if thresholds else None
+
+        if threshold_payload:
+            try:
+                result = module.detect_anomalies(state, threshold_payload)
+            except TypeError:
+                # Backward compatibility for older Julia bridge signatures.
+                result = module.detect_anomalies(state)
+        else:
+            result = module.detect_anomalies(state)
+
         parsed = ensure_record_list(_from_julia(result), context="detect_anomalies")
         _bridge_timing("detect_anomalies", start, True)
         return parsed

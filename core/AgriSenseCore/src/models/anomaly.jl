@@ -50,7 +50,7 @@ end
 
 @kernel function western_electric_kernel!(flags, current, means, stds,
                                           history, head_arr, valid_len_arr, buf_size,
-                                          sigma1, sigma2, sigma3)
+                                          sigma1_map, sigma2_map, sigma3_map)
     i = @index(Global)  # flat index over (vertex, feature)
     @inbounds begin
         d = size(current, 2)
@@ -58,6 +58,9 @@ end
         f = mod(i - 1, d) + 1
         s = stds[v, f]
         m = means[v, f]
+        sigma1 = sigma1_map[v, f]
+        sigma2 = sigma2_map[v, f]
+        sigma3 = sigma3_map[v, f]
         head = Int32(head_arr[1])
         valid_len = Int32(valid_len_arr[1])
 
@@ -166,6 +169,51 @@ end
 const MIN_HISTORY_FOR_ANOMALY = 8
 const MIN_NAN_RUN_FOR_OUTAGE = 4
 const OUTAGE_ANOMALY_TYPE = "sensor_outage"
+const DEFAULT_VISION_ANOMALY_SCORE_THRESHOLD = 0.7f0
+
+@inline _to_float32(value, fallback::Float32)::Float32 =
+    value isa Number ? Float32(value) : fallback
+
+@inline _to_int(value, fallback::Int)::Int =
+    value isa Integer ? Int(value) : fallback
+
+@inline _to_bool(value, fallback::Bool)::Bool =
+    value isa Bool ? value : fallback
+
+function _resolve_threshold(
+    threshold_cfg::Dict{String,Any},
+    vertex_id::String,
+    layer_name::String,
+)::Dict{String,Any}
+    defaults = get(threshold_cfg, "default", Dict{String,Any}())
+    by_vertex_layer = get(threshold_cfg, "by_vertex_layer", Dict{String,Any}())
+    by_layer = get(threshold_cfg, "by_layer", Dict{String,Any}())
+
+    merged = Dict{String,Any}()
+    if defaults isa Dict
+        merge!(merged, defaults)
+    end
+
+    wildcard_key = string(vertex_id, "|*")
+    exact_key = string(vertex_id, "|", layer_name)
+
+    wildcard_cfg = get(by_vertex_layer, wildcard_key, nothing)
+    if wildcard_cfg isa Dict
+        merge!(merged, wildcard_cfg)
+    end
+
+    layer_cfg = get(by_layer, layer_name, nothing)
+    if layer_cfg isa Dict
+        merge!(merged, layer_cfg)
+    end
+
+    exact_cfg = get(by_vertex_layer, exact_key, nothing)
+    if exact_cfg isa Dict
+        merge!(merged, exact_cfg)
+    end
+
+    return merged
+end
 
 """
     anomaly_type_from_layer(layer_sym::Symbol) -> String
@@ -224,7 +272,10 @@ end
 Detect anomalies using rolling mean/σ and Western Electric rules on sensor streams.
 GPU-accelerated: kernels compute on device, results pulled to CPU for Dict output.
 """
-function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String,Any}}
+function compute_anomaly_detection(
+    graph::LayeredHyperGraph;
+    thresholds::Dict{String,Any}=Dict{String,Any}(),
+)::Vector{Dict{String,Any}}
     results = Dict{String,Any}[]
     nv = graph.n_vertices
 
@@ -244,9 +295,14 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
         :crop_requirements => ["target_yield", "growth_progress", "n_target", "p_target", "k_target"],
     )
 
-    sigma1 = 1.0f0
-    sigma2 = 2.0f0
-    sigma3 = 3.0f0
+    default_sigma1 = _to_float32(get(get(thresholds, "default", Dict{String,Any}()), "sigma1", 1.0f0), 1.0f0)
+    default_sigma2 = _to_float32(get(get(thresholds, "default", Dict{String,Any}()), "sigma2", 2.0f0), 2.0f0)
+    default_sigma3 = _to_float32(get(get(thresholds, "default", Dict{String,Any}()), "sigma3", 3.0f0), 3.0f0)
+    default_min_history = _to_int(get(get(thresholds, "default", Dict{String,Any}()), "min_history", MIN_HISTORY_FOR_ANOMALY), MIN_HISTORY_FOR_ANOMALY)
+    default_min_nan_run = _to_int(get(get(thresholds, "default", Dict{String,Any}()), "min_nan_run_outage", MIN_NAN_RUN_FOR_OUTAGE), MIN_NAN_RUN_FOR_OUTAGE)
+    default_enabled = _to_bool(get(get(thresholds, "default", Dict{String,Any}()), "enabled", true), true)
+    default_suppress_rule3_only = _to_bool(get(get(thresholds, "default", Dict{String,Any}()), "suppress_rule3_only", true), true)
+    default_vision_score = _to_float32(get(get(thresholds, "default", Dict{String,Any}()), "vision_anomaly_score_threshold", DEFAULT_VISION_ANOMALY_SCORE_THRESHOLD), DEFAULT_VISION_ANOMALY_SCORE_THRESHOLD)
 
     # Rule name lookup for bitfield decoding
     rule_labels = ("3sigma", "2of3_2sigma", "4of5_1sigma", "8consec_same_side")
@@ -257,6 +313,38 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
         d = size(layer.vertex_features, 2)
         backend = array_backend(layer.vertex_features)
         ndrange = nv * d
+
+        sigma1_cpu = fill(default_sigma1, nv, d)
+        sigma2_cpu = fill(default_sigma2, nv, d)
+        sigma3_cpu = fill(default_sigma3, nv, d)
+        enabled_vertex = fill(default_enabled, nv)
+        suppress_rule3_only_vertex = fill(default_suppress_rule3_only, nv)
+        min_history_vertex = fill(default_min_history, nv)
+        min_nan_run_vertex = fill(default_min_nan_run, nv)
+        vision_score_vertex = fill(default_vision_score, nv)
+
+        for v in 1:nv
+            vid = v <= length(layer.vertex_ids) ? layer.vertex_ids[v] : string("v_", v)
+            cfg = _resolve_threshold(thresholds, vid, string(layer_sym))
+            sigma1_val = _to_float32(get(cfg, "sigma1", default_sigma1), default_sigma1)
+            sigma2_val = _to_float32(get(cfg, "sigma2", default_sigma2), default_sigma2)
+            sigma3_val = _to_float32(get(cfg, "sigma3", default_sigma3), default_sigma3)
+
+            sigma1_cpu[v, :] .= sigma1_val
+            sigma2_cpu[v, :] .= sigma2_val
+            sigma3_cpu[v, :] .= sigma3_val
+            enabled_vertex[v] = _to_bool(get(cfg, "enabled", default_enabled), default_enabled)
+            suppress_rule3_only_vertex[v] = _to_bool(
+                get(cfg, "suppress_rule3_only", default_suppress_rule3_only),
+                default_suppress_rule3_only,
+            )
+            min_history_vertex[v] = _to_int(get(cfg, "min_history", default_min_history), default_min_history)
+            min_nan_run_vertex[v] = _to_int(get(cfg, "min_nan_run_outage", default_min_nan_run), default_min_nan_run)
+            vision_score_vertex[v] = _to_float32(
+                get(cfg, "vision_anomaly_score_threshold", default_vision_score),
+                default_vision_score,
+            )
+        end
 
         # Allocate on device
         means   = backend isa CPU ? zeros(Float32, nv, d) :
@@ -283,11 +371,18 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
         launch_kernel!(rolling_stats_kernel!, backend, ndrange,
                        means, stds, layer.feature_history, valid_len_arr, Int32(d))
 
+        sigma1_map = backend isa CPU ? sigma1_cpu :
+                 (HAS_CUDA ? CuArray(sigma1_cpu) : sigma1_cpu)
+        sigma2_map = backend isa CPU ? sigma2_cpu :
+                 (HAS_CUDA ? CuArray(sigma2_cpu) : sigma2_cpu)
+        sigma3_map = backend isa CPU ? sigma3_cpu :
+                 (HAS_CUDA ? CuArray(sigma3_cpu) : sigma3_cpu)
+
         # Western Electric kernel (full 4-rule bitfield)
         launch_kernel!(western_electric_kernel!, backend, ndrange,
                        flags, current, means, stds,
                        layer.feature_history, head_arr, valid_len_arr, buf_size,
-                       sigma1, sigma2, sigma3)
+                   sigma1_map, sigma2_map, sigma3_map)
 
         # NaN-run kernel (contiguous outage detection)
         nan_runs = backend isa CPU ? zeros(Int32, nv, d) :
@@ -311,12 +406,15 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
         ts_start = ts_end - Minute(CADENCE_MINUTES * layer.history_length)
 
         for v in 1:nv, f in 1:d
+            enabled_vertex[v] || continue
+            layer.history_length >= min_history_vertex[v] || continue
+
             flags_cpu[v, f] == 0 && continue
             bitflag = flags_cpu[v, f]
 
             # Rule 3 (4-of-5 > 1σ) alone is intentionally treated as low-signal noise.
             # Require corroboration from stronger rules to avoid unstable baseline alerts.
-            bitflag == Int32(4) && continue
+            suppress_rule3_only_vertex[v] && bitflag == Int32(4) && continue
 
             vid = v <= length(layer.vertex_ids) ? layer.vertex_ids[v] : "v_$v"
             fname = f <= length(fnames) ? fnames[f] : "feature_$f"
@@ -361,7 +459,8 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
         if layer_sym == :vision && d >= 3
             vision_feat_cpu = ensure_cpu(layer.vertex_features)
             for v in 1:nv
-                if vision_feat_cpu[v, 3] > 0.7f0  # high CV anomaly score
+                enabled_vertex[v] || continue
+                if vision_feat_cpu[v, 3] > vision_score_vertex[v]  # high CV anomaly score
                     push!(vision_anomaly_vertices, v)
                 end
             end
@@ -370,12 +469,15 @@ function compute_anomaly_detection(graph::LayeredHyperGraph)::Vector{Dict{String
         # --- Contiguous outage detection (NaN-run based) ---
         layer_outage_vertices = Set{Int}()
         for v in 1:nv, f in 1:d
-            nan_runs_cpu[v, f] < MIN_NAN_RUN_FOR_OUTAGE && continue
+            enabled_vertex[v] || continue
+
+            min_nan_run = min_nan_run_vertex[v]
+            nan_runs_cpu[v, f] < min_nan_run && continue
 
             vid = v <= length(layer.vertex_ids) ? layer.vertex_ids[v] : "v_$v"
             fname = f <= length(fnames) ? fnames[f] : "feature_$f"
             run_len = Int(nan_runs_cpu[v, f])
-            severity = run_len >= 2 * MIN_NAN_RUN_FOR_OUTAGE ? "alarm" : "warning"
+            severity = run_len >= 2 * min_nan_run ? "alarm" : "warning"
 
             sigma_dev = stds_cpu[v, f] > 1.0f-8 ?
                         abs(current_cpu[v, f] - means_cpu[v, f]) / stds_cpu[v, f] : 0.0f0

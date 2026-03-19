@@ -98,3 +98,11 @@ class JobStatusEnum(StrEnum):
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
+
+
+class AnomalySeverityEnum(StrEnum):
+    """Normalized anomaly severity used across API, storage, and webhooks."""
+
+    info = "info"
+    warning = "warning"
+    critical = "critical"

@@ -32,6 +32,7 @@ from app.schemas.analytics import (
     ZoneDetailResponse,
     ZoneStatus,
 )
+from app.schemas.anomalies import AnomalyHistoryQuery, AnomalyHistoryResponse
 from app.schemas.farm import (
     CrossLayerSummary,
     VisualizationAlertItem,
@@ -41,6 +42,7 @@ from app.schemas.farm import (
     VisualizationResponse,
 )
 from app.services import julia_bridge
+from app.services.anomaly_service import AnomalyService
 from app.services.farm_service import FarmService
 
 LAYER_VIS_META: dict[str, dict[str, Any]] = {
@@ -425,15 +427,17 @@ class AnalyticsService:
         farm = await farm_service.get_farm(farm_id)
         await self._ensure_graph(farm_id)
 
-        anomalies = julia_bridge.detect_anomalies(str(farm_id))
+        anomaly_service = AnomalyService(self.db, self.redis_client)
+        persisted_anomalies = await anomaly_service.detect_and_persist(farm_id)
         nutrients = julia_bridge.nutrient_report(str(farm_id))
 
         zone_index = await self._zone_vertex_index(farm_id)
         zone_alert_map: dict[uuid.UUID | None, list[AlertItem]] = defaultdict(list)
 
-        for item in anomalies:
+        for event in persisted_anomalies:
+            item = event.payload if isinstance(event.payload, dict) else {}
             zone_key = self._resolve_alert_zone(item, zone_index)
-            severity = str(item.get("severity") or item.get("urgency") or "warning")
+            severity = event.severity.value
             zone_alert_map[zone_key].append(
                 AlertItem(source="anomaly", severity=severity, payload=item)
             )
@@ -446,7 +450,8 @@ class AnalyticsService:
             )
 
         if FarmTypeEnum(farm.farm_type) in {FarmTypeEnum.greenhouse, FarmTypeEnum.hybrid}:
-            for item in anomalies:
+            for event in persisted_anomalies:
+                item = event.payload if isinstance(event.payload, dict) else {}
                 layer = str(item.get("layer") or "")
                 if layer != "vision":
                     continue
@@ -454,7 +459,7 @@ class AnalyticsService:
                 zone_alert_map[zone_key].append(
                     AlertItem(
                         source="vision",
-                        severity=str(item.get("severity") or "warning"),
+                        severity=event.severity.value,
                         payload=item,
                     )
                 )
@@ -472,6 +477,14 @@ class AnalyticsService:
             generated_at=datetime.now(UTC),
             zones=zone_payload,
         )
+
+    async def get_anomaly_history(
+        self,
+        farm_id: uuid.UUID,
+        query: AnomalyHistoryQuery,
+    ) -> AnomalyHistoryResponse:
+        service = AnomalyService(self.db, self.redis_client)
+        return await service.get_history(farm_id, query)
 
     async def get_visualization(self, farm_id: uuid.UUID) -> VisualizationResponse:
         farm_service = FarmService(self.db)

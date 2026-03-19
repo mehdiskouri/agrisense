@@ -105,11 +105,14 @@ function backtest_yield(
 end
 
 """
-    detect_anomalies(graph_state::Dict) -> Vector{Dict}
+    detect_anomalies(graph_state::Dict, thresholds::Dict=Dict()) -> Vector{Dict}
 """
-function detect_anomalies(graph_state::Dict)::Vector{Dict{String,Any}}
+function detect_anomalies(
+    graph_state::Dict,
+    thresholds::Dict=Dict{String,Any}(),
+)::Vector{Dict{String,Any}}
     graph = _get_graph(graph_state)
-    return compute_anomaly_detection(graph)
+    return compute_anomaly_detection(graph; thresholds=thresholds)
 end
 
 """
